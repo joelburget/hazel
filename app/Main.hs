@@ -21,7 +21,7 @@ diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
 
 caseExample :: Computation
 caseExample = Case
-  (Annot (Index 0) (LabelsTy (V.fromList ["x", "y"])))
+  (Annot (Index 0) (IndexTy 2))
   (PrimTy NatTy)
   (V.fromList
     [ Primitive (Nat 1)

@@ -49,7 +49,7 @@ data Computation
   -- ... actually we need case or there is no branching!
   | Case Computation     -- expression
          Type            -- type of the case expr
-         (Vector Value)  -- expressions for each label
+         (Vector Value)  -- expressions for each index
 
   -- Type annotations mark the places where computation is still to be done, or
   -- the "cuts". - I Got Plenty o' Nuttin'
@@ -82,7 +82,7 @@ data Deriv
   | Prd' Int
   | Let1
   | Let2
-  | Label'
+  | Index'
   | Primitive'
   | Neu'
   deriving Show
@@ -123,7 +123,11 @@ data PrimTy
 
 data Type
   = PrimTy PrimTy
-  | LabelsTy (Vector String)
+  -- | Type of a bounded index.
+  --
+  -- `IndexTy 2` is the type of `Index 0` and `Index 1`. This type is analogous
+  -- to `Fin` in that it describes bounded nats.
+  | IndexTy Int
   | LollyTy (Type, Usage) Type
   | TupleTy (Vector Type)
   deriving (Eq, Show)
@@ -220,31 +224,39 @@ infer dirs ctx t = case t of
   Case cTm ty vTms -> do
     (leftovers1, cTmTy) <- infer (CaseArg:dirs) ctx cTm
 
-    -- TODO: check branches (labels) matches the right-hand-sides, cTm matches
-    -- also
+    -- TEMP(joel): right now we only case on indices -- generalize so we can
+    -- handle sums rather than just enums.
+    case cTmTy of
+      IndexTy tm1Size -> assert
+        -- Check that we have at least as many handlers as the size of the
+        -- inspected term
+        (tm1Size <= V.length vTms)
+        (CaseArg:dirs)
+        "[infer Case] index mismatch"
+      _ -> throwStackError (CaseArg:dirs)
+        "[infer Case] can't case on non-indices: "
 
-    leftovers2 <- flip execStateT leftovers1 $ imapM
+    branchResults <- flip evalStateT leftovers1 $ imapM
       (\i vTm -> do
         let subCtx = (cTmTy, Inexhaustible):ctx
             dirs' = CaseBranch i:dirs
-        (_, usage):newCtx <- lift $ check dirs' subCtx ty vTm
+        (resultTy, usage):newCtx <- lift $ check dirs' subCtx ty vTm
         assert (usage /= UseOnce) dirs'
           "[infer Case] must consume linear variable in case branch"
-        return newCtx
+        return (resultTy, newCtx)
       )
       vTms
 
-    assert (allTheSame leftovers2) dirs
+    -- switch from [(ty, ctx)] to ([ty], [ctx])
+    let (resultTys, leftovers2) = V.unzip branchResults
+
+    assert (allTheSame (V.toList leftovers2)) dirs
       "[infer Case] all branches must consume the same linear variables"
 
---     case cTmTy of
---       LabelsTy _label -> assert (cTmTy == ty) "[infer Case] label mismatch"
---       _ -> throwError "[infer Case] can't case on non-labels"
---       -- PrimTy _prim -> assert (cTmTy == ty) "[infer Case] primitive mismatch"
---       -- TupleTy _values -> assert (cTmTy == ty) "[infer Case] tuple mismatch"
---       -- LollyTy _ _ -> throwError "[infer Case] can't case on function"
+    assert (allTheSame (V.toList resultTys)) dirs
+      "[infer Case] all branches must produce the same type"
 
-    return (leftovers2, ty)
+    return (V.head leftovers2, ty)
 
   Annot vTm ty -> do
     leftovers <- check (Annot':dirs) ctx ty vTm
@@ -309,14 +321,13 @@ check dirs ctx ty tm = case tm of
         "[check Primitive] trying to match nat against non-nat type"
     return ctx
 
-  -- XXX(joel) This doesn't make sense -- think about removing / replacing
   Index i -> case ty of
-    LabelsTy names -> do
-      assert (V.length names >= i) (Label':dirs)
-        "[check Index] didn't find index in label vec"
+    IndexTy size -> do
+      assert (i < size) (Index':dirs)
+        "[check Index] didn't find index in index vec"
       return ctx
-    _ -> throwStackError (Label':dirs)
-           "[check Label] checking Index against non-LabelsTy"
+    _ -> throwStackError (Index':dirs)
+           "[check Index] checking Index against non-IndexTy"
 
   Neu cTm -> do
     (leftovers, cTmTy) <- infer (Neu':dirs) ctx cTm
