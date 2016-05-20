@@ -50,6 +50,9 @@ data Computation
   | Case Computation     -- expression
          Type            -- type of the case expr
          (Vector Value)  -- expressions for each label
+
+  -- Type annotations mark the places where computation is still to be done, or
+  -- the "cuts". - I Got Plenty o' Nuttin'
   | Annot Value Type
   deriving Show
 
