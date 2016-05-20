@@ -14,7 +14,7 @@ swap = Lam (Let
 
 illTyped = Let
   (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
-  (Annot (Lam (Neu (BVar 0))) (LollyTy (PrimTy NatTy) (PrimTy NatTy)))
+  (Annot (Lam (Neu (BVar 0))) (LollyTy (PrimTy NatTy, UseOnce) (PrimTy NatTy)))
   (Prd (V.fromList [Neu (BVar 0), Neu (BVar 1)]))
 
 diagonal = Lam (Prd (V.fromList [Neu (BVar 0), Neu (BVar 0)]))
@@ -45,7 +45,8 @@ main = do
   let swapTy =
         let x = PrimTy StringTy
             y = PrimTy NatTy
-        in LollyTy (TupleTy (V.fromList [x, y])) (TupleTy (V.fromList [y, x]))
+        in LollyTy (TupleTy (V.fromList [x, y]), UseOnce)
+                   (TupleTy (V.fromList [y, x]))
   putStrLn "> checking swap"
   putStrLn $ runChecker $ checkToplevel swapTy swap
 
@@ -53,7 +54,7 @@ main = do
   -- but this doesn't -- it duplicates its linear variable
   let diagonalTy =
         let x = PrimTy StringTy
-        in LollyTy x (TupleTy (V.fromList [x, x]))
+        in LollyTy (x, UseOnce) (TupleTy (V.fromList [x, x]))
   putStrLn "> checking diagonal (expected failure due to duplicating linear variable)"
   putStrLn $ runChecker $ checkToplevel diagonalTy diagonal
 
