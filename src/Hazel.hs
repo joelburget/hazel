@@ -40,6 +40,13 @@ data Computation
   = BVar Int
   | FVar String
   | App Computation Value
+
+  -- Type annotations mark the places where computation is still to be done, or
+  -- the "cuts". - I Got Plenty o' Nuttin'
+  | Annot Value Type
+
+  -- see below for connective eliminators
+
   -- questions arise re the eliminator for tuples
   -- * is it case, or was case just the eliminator for sums?
   -- * is let a suitable eliminator? but let's a checked term, not inferred
@@ -47,24 +54,39 @@ data Computation
   --   cases branch (justifying no inferred term for eliminating tuples).
   --
   -- ... actually we need case or there is no branching!
+  --
+  -- Recommended pairing: 'PosPrd', 'PosSum'
   | Case Computation     -- expression
          Type            -- type of the case expr
          (Vector Value)  -- expressions for each index
-
-  -- Type annotations mark the places where computation is still to be done, or
-  -- the "cuts". - I Got Plenty o' Nuttin'
-  | Annot Value Type
+  |
   deriving Show
 
 -- checked terms / introductions / values
 data Value
   = Lam Value
   | Primop Primop
-  | Prd (Vector Value)
   | Let Pattern Computation Value
   | Index Int
   | Primitive Primitive
   | Neu Computation
+
+  -- linear connectivesssssss!!!
+
+  -- | products with simultaneous unpack
+  --
+  -- Pair with 'Case'.
+  | PosPrd (Vector Value)
+
+  -- | sums with case analysis
+  --
+  -- Pair with 'Case'.
+  | PosSum Int Value
+
+  --
+  -- really only one of these will be accessed
+  | NegPrd (Vector Value)
+  | NegSum Int Value
   deriving Show
 
 data Deriv
@@ -79,12 +101,16 @@ data Deriv
   -- value
   | Lam'
   | Primop'
-  | Prd' Int
   | Let1
   | Let2
   | Index'
   | Primitive'
   | Neu'
+
+  | PosPrd' Int
+  | PosSum'
+  | NegPrd' Int
+  | NegSum'
   deriving Show
 
 -- Match nested n-tuples.
@@ -92,6 +118,7 @@ data Deriv
 -- Easy extension: `Underscore` doesn't bind any variables. Useful?
 data Pattern
   = MatchTuple (Vector Pattern)
+  | MatchTagged Int Pattern
   | MatchVar Usage
   deriving Show
 
@@ -297,14 +324,14 @@ check dirs ctx ty tm = case tm of
         "[check Let] must consume linear bound variables"
     return leftovers2
 
-  Prd vTms -> case ty of
+  PosPrd vTms -> case ty of
     -- Thread the leftover context through from left to right.
     TupleTy tys ->
       -- Layer on a state transformer for this bit, since we're passing
       -- leftovers from one term to the next
       let calc = V.imapM
             (\i (tm', ty') -> do
-              let dirs' = (Prd' i):dirs
+              let dirs' = (PosPrd' i):dirs
               leftovers <- get
               newLeftovers <- lift $ check dirs' leftovers ty' tm'
               put newLeftovers
@@ -313,7 +340,9 @@ check dirs ctx ty tm = case tm of
       -- execState gives back the final state
       in execStateT calc ctx
     _ -> throwStackError dirs
-           "[check Prd] checking Prd agains non-product type"
+           "[check PosPrd] checking PosPrd agains non-product type"
+
+  PosSum ix val -> undefined
 
   Primitive prim -> do
     case prim of
@@ -361,17 +390,17 @@ evalC env tm = case tm of
           Just branch -> evalV (cTm':env) branch
           _ -> throwError "[evalC Case] couldn't find branch"
       Primitive _p -> undefined
-      Prd _p -> undefined
+      PosPrd _p -> undefined
       Neu _cTm -> undefined
       _ -> throwError "[evalC Case] unmatchable"
   Annot vTm _ty -> evalV env vTm
 
 evalPrimop :: Primop -> Value -> Either String Value
-evalPrimop Add (Prd args)
+evalPrimop Add (PosPrd args)
   | [NatV x, NatV y] <- V.toList args
   = pure (NatV (x + y))
 evalPrimop PrintNat (NatV i) = pure (StrV (show i))
-evalPrimop ConcatString (Prd args)
+evalPrimop ConcatString (PosPrd args)
   | [StrV l, StrV r] <- V.toList args
   = pure (StrV (l ++ r))
 evalPrimop ToUpper (StrV s) = pure (StrV (map toUpper s))
@@ -380,7 +409,7 @@ evalPrimop _ _ = throwError "unexpected arguments to evalPrimop"
 
 evalV :: [Value] -> Value -> Either String Value
 evalV env tm = case tm of
-  Prd vTms -> Prd <$> (mapM (evalV env) vTms)
+  PosPrd vTms -> PosPrd <$> (mapM (evalV env) vTms)
   Let _pat cTm vTm -> do
     cTm' <- evalC env cTm
     evalV (cTm':env) vTm
@@ -404,7 +433,7 @@ openC k x tm = case tm of
 openV :: Int -> String -> Value -> Value
 openV k x tm = case tm of
   Lam vTm -> Lam (openV (k + 1) x vTm)
-  Prd vTms -> Prd (V.map (openV k x) vTms)
+  PosPrd vTms -> PosPrd (V.map (openV k x) vTms)
   Let pat cTm vTm ->
     let bindingSize = patternSize pat
     in Let pat (openC k x cTm) (openV (k + bindingSize) x vTm)
