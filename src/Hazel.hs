@@ -124,7 +124,7 @@ data PrimTy
 data Type
   = PrimTy PrimTy
   | LabelsTy (Vector String)
-  | LollyTy Type Type
+  | LollyTy (Type, Usage) Type
   | TupleTy (Vector Type)
   deriving (Eq, Show)
 
@@ -183,11 +183,11 @@ inferPrimop p =
       str = PrimTy StringTy
       tuple = TupleTy . V.fromList
   in case p of
-       Add -> LollyTy (tuple [nat, nat]) nat
-       PrintNat -> LollyTy nat str
-       ConcatString -> LollyTy (tuple [str, str]) str
-       ToUpper -> LollyTy str str
-       ToLower -> LollyTy str str
+       Add -> LollyTy (tuple [nat, nat], UseOnce) nat
+       PrintNat -> LollyTy (nat, UseOnce) str
+       ConcatString -> LollyTy (tuple [str, str], UseOnce) str
+       ToUpper -> LollyTy (str, UseOnce) str
+       ToLower -> LollyTy (str, UseOnce) str
 
 
 allTheSame :: (Eq a) => [a] -> Bool
@@ -204,16 +204,19 @@ throwStackError dirs str =
 infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
 infer dirs ctx t = case t of
   BVar i -> inferVar (BVar':dirs) ctx i
+
   FVar _name -> throwStackError (FVar':dirs)
     "[infer FVar] found unexpected free variable"
+
   App cTm vTm -> do
     (leftovers, cTmTy) <- infer (App1:dirs) ctx cTm
     case cTmTy of
-      LollyTy inTy outTy -> do
+      LollyTy (inTy, inUsage) outTy -> do
         leftovers2 <- check (App2:dirs) leftovers inTy vTm
         return (leftovers2, outTy)
       _ -> throwStackError (App1:dirs)
         "[infer App] inferred non LollyTy in LHS of application"
+
   Case cTm ty vTms -> do
     (leftovers1, cTmTy) <- infer (CaseArg:dirs) ctx cTm
 
@@ -250,25 +253,26 @@ infer dirs ctx t = case t of
 check :: LocationDirections -> Ctx -> Type -> Value -> Either String Ctx
 check dirs ctx ty tm = case tm of
   Lam body -> case ty of
-    LollyTy argTy tau -> do
-      let bodyCtx = (argTy, UseOnce):ctx
+    LollyTy (argTy, usage) tau -> do
+      let bodyCtx = (argTy, usage):ctx
       (_, usage):leftovers <- check (Lam':dirs) bodyCtx tau body
       assert (usage /= UseOnce) (Lam':dirs)
         "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwStackError (Lam':dirs)
       "[check Lam] checking lambda against non-lolly type"
+
   Primop p -> do
     let expectedTy = inferPrimop p
     assert (ty == expectedTy) dirs $
       "[check Primop] primop (" ++ show p ++ ") type mismatch"
     return ctx
+
   Let pat letTm vTm -> do
     (leftovers, tmTy) <- infer (Let1:dirs) ctx letTm
     patternTy <- typePattern pat tmTy
     -- XXX do we need to reverse these?
-    let freshVars = map (, UseOnce) patternTy
-        bodyCtx = freshVars ++ leftovers
+    let bodyCtx = patternTy ++ leftovers
         arity = length patternTy
     newCtx <- check (Let2:dirs) bodyCtx ty vTm
 
@@ -278,6 +282,7 @@ check dirs ctx ty tm = case tm of
       assert (usage /= UseOnce) dirs
         "[check Let] must consume linear bound variables"
     return leftovers2
+
   Prd vTms -> case ty of
     -- Thread the leftover context through from left to right.
     TupleTy tys ->
@@ -395,8 +400,8 @@ openV k x tm = case tm of
   Primop _ -> tm
   Neu cTm -> Neu (openC k x cTm)
 
-typePattern :: MonadError String m => Pattern -> Type -> m [Type]
-typePattern (MatchVar _) ty = pure [ty]
+typePattern :: MonadError String m => Pattern -> Type -> m [(Type, Usage)]
+typePattern (MatchVar usage) ty = pure [(ty, usage)]
 -- TODO check these line up (subPats / subTys)
 --
 -- example:
