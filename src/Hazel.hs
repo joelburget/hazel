@@ -267,8 +267,8 @@ check dirs ctx ty tm = case tm of
   Lam body -> case ty of
     LollyTy (argTy, usage) tau -> do
       let bodyCtx = (argTy, usage):ctx
-      (_, usage):leftovers <- check (Lam':dirs) bodyCtx tau body
-      assert (usage /= UseOnce) (Lam':dirs)
+      (_, usage'):leftovers <- check (Lam':dirs) bodyCtx tau body
+      assert (usage' /= UseOnce) (Lam':dirs)
         "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwStackError (Lam':dirs)
