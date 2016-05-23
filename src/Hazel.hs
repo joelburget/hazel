@@ -222,7 +222,7 @@ infer dirs ctx t = case t of
         "[infer App] inferred non LollyTy in LHS of application"
 
   Case cTm ty vTms -> do
-    (leftovers1, cTmTy) <- infer (CaseArg:dirs) ctx cTm
+    (leftovers, cTmTy) <- infer (CaseArg:dirs) ctx cTm
 
     -- TEMP(joel): right now we only case on indices -- generalize so we can
     -- handle sums rather than just enums.
@@ -236,27 +236,13 @@ infer dirs ctx t = case t of
       _ -> throwStackError (CaseArg:dirs)
         "[infer Case] can't case on non-indices: "
 
-    branchResults <- flip evalStateT leftovers1 $ imapM
-      (\i vTm -> do
-        let subCtx = (cTmTy, Inexhaustible):ctx
-            dirs' = CaseBranch i:dirs
-        (resultTy, usage):newCtx <- lift $ check dirs' subCtx ty vTm
-        assert (usage /= UseOnce) dirs'
-          "[infer Case] must consume linear variable in case branch"
-        return (resultTy, newCtx)
-      )
-      vTms
+    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) ctx ty vTm)
+                        vTms
 
-    -- switch from [(ty, ctx)] to ([ty], [ctx])
-    let (resultTys, leftovers2) = V.unzip branchResults
-
-    assert (allTheSame (V.toList leftovers2)) dirs
+    assert (allTheSame (V.toList branchCtxs)) dirs
       "[infer Case] all branches must consume the same linear variables"
 
-    assert (allTheSame (V.toList resultTys)) dirs
-      "[infer Case] all branches must produce the same type"
-
-    return (V.head leftovers2, ty)
+    return (V.head branchCtxs, ty)
 
   Annot vTm ty -> do
     leftovers <- check (Annot':dirs) ctx ty vTm
