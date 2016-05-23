@@ -151,8 +151,6 @@ type LocationDirections = [Deriv]
 -- usage of `BVar i` we access `ctx !! i`.
 type Ctx = [(Type, Usage)]
 
-type CheckM = ReaderT LocationDirections (Either String)
-
 -- I (Joel) made the explicit choice to not use the state monad to track
 -- leftovers, since I want to take a little more care with tracking linearity.
 -- We layer it on in some places where it's helpful.
@@ -163,14 +161,14 @@ type CheckM = ReaderT LocationDirections (Either String)
 --
 -- TODO do we need to check all linear variables have been consumed here?
 -- * we should just fix this so it passes in the empty context to the checker
-runChecker :: CheckM Ctx -> String
-runChecker checker = either id (const "success!") (runReaderT checker [])
+runChecker :: Either String Ctx -> String
+runChecker = either id (const "success!")
 
 assert :: MonadError String m => Bool -> LocationDirections -> String -> m ()
 assert True _ _ = return ()
 assert False dirs str = throwStackError dirs str
 
-inferVar :: LocationDirections -> Ctx -> Int -> CheckM (Ctx, Type)
+inferVar :: LocationDirections -> Ctx -> Int -> Either String (Ctx, Type)
 inferVar dirs ctx k = do
   -- find the type, count this as a usage
   let (ty, usage) = ctx !! k
@@ -203,7 +201,7 @@ throwStackError dirs str =
   let stackStr = unlines (map show (reverse dirs))
   in throwError $ stackStr ++ "\n" ++ str
 
-infer :: LocationDirections -> Ctx -> Computation -> CheckM (Ctx, Type)
+infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
 infer dirs ctx t = case t of
   BVar i -> inferVar (BVar':dirs) ctx i
   FVar _name -> throwStackError (FVar':dirs)
@@ -249,7 +247,7 @@ infer dirs ctx t = case t of
     leftovers <- check (Annot':dirs) ctx ty vTm
     return (leftovers, ty)
 
-check :: LocationDirections -> Ctx -> Type -> Value -> CheckM Ctx
+check :: LocationDirections -> Ctx -> Type -> Value -> Either String Ctx
 check dirs ctx ty tm = case tm of
   Lam body -> case ty of
     LollyTy argTy tau -> do
@@ -321,7 +319,7 @@ check dirs ctx ty tm = case tm of
       "[check Neu] checking inferred neutral type"
     return leftovers
 
-checkToplevel :: Type -> Value -> CheckM Ctx
+checkToplevel :: Type -> Value -> Either String Ctx
 checkToplevel = check [] []
 
 evalC :: [Value] -> Computation -> Either String Value
