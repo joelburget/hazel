@@ -487,7 +487,7 @@ openC k x tm = case tm of
   FVar _ -> tm
   App cTm vTm -> App (openC k x cTm) (openV k x vTm)
   Case cTm ty vTms ->
-    Case (openC k x cTm) ty (V.map (openV (k + 1) x) vTms)
+    Case (openC k x cTm) ty (V.map (openV k x) vTms)
   Choose cTm i -> Choose (openC k x cTm) i
   Annot vTm ty -> Annot (openV k x vTm) ty
 
