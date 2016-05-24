@@ -429,7 +429,8 @@ evalC env tm = case tm of
       Index branchIx ->
         case vTms V.!? branchIx of
           Just branch -> evalV env branch
-          _ -> throwError "[evalC Case] couldn't find branch"
+          _ -> throwError
+            ("[evalC Case] couldn't find branch for index " ++ show branchIx)
       Tuple _ tupleTms -> do
         -- TODO(joel) it feels like this duplicates tuple evaluation
         tupleTms' <- forM tupleTms (evalV env)
@@ -442,7 +443,7 @@ evalC env tm = case tm of
           "[evalC Case] case for Tuple must have exactly one branch"
           )
         evalV newEnv (V.head vTms)
-      _ -> throwError "[evalC Case] unmatchable"
+      _ -> throwError $ "[evalC Case] can't case on non-index " ++ show cTm'
   Choose cTm idx -> do
     cTm' <- evalC env cTm
     case cTm' of
