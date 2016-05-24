@@ -282,7 +282,7 @@ infer dirs ctx t = case t of
       _ -> throwStackError (CaseArg:dirs)
         "[infer Case] can't case on non-indices"
 
-    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) ctx ty vTm)
+    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) leftovers ty vTm)
                         vTms
 
     assert (allTheSame (V.toList branchCtxs)) dirs
