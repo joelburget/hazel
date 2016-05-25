@@ -257,6 +257,9 @@ throwStackError dirs str =
   let stackStr = unlines (map show (reverse dirs))
   in throwError $ stackStr ++ "\n" ++ str
 
+reverseConcat :: Foldable t => t a -> [a] -> [a]
+xs `reverseConcat` ys = foldl' (flip (:)) ys xs
+
 infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
 infer dirs ctx t = case t of
   BVar i -> inferVar (BVar':dirs) ctx i
@@ -318,7 +321,7 @@ infer dirs ctx t = case t of
                 TupleTy allTupTys -> return allTupTys
                 _ -> throwStackError (Unpack':dirs)
                   ("[infer Unpack] can't unpack a non-tuple: " ++ show cTmTy)
-    let newCtx = foldl' (flip (:)) leftovers ((,usage) <$> tupTys)
+    let newCtx = ((,usage) <$> tupTys) `reverseConcat` leftovers
     leftovers' <- check (Unpack':dirs) newCtx ty vTm
     return (leftovers', ty)
 
@@ -459,7 +462,7 @@ evalC env tm = case tm of
   Unpack (cTm, _usage) (vTm, _ty) -> do
     cTm' <- evalC env cTm
     case cTm' of
-      Tuple _ tupTms -> evalV (foldl' (flip (:)) env tupTms) vTm
+      Tuple _ tupTms -> evalV (tupTms `reverseConcat` env) vTm
       _ -> throwError $ "[evalC Unpack] can't unpack non-tuple: " ++ show cTm'
   Annot vTm _ty -> evalV env vTm
 
