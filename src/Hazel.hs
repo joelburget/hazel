@@ -40,6 +40,13 @@ data Computation
   = BVar Int
   | FVar String
   | App Computation Value
+
+  -- Type annotations mark the places where computation is still to be done, or
+  -- the "cuts". - I Got Plenty o' Nuttin'
+  | Annot Value Type
+
+  -- see below for connective eliminators
+
   -- questions arise re the eliminator for tuples
   -- * is it case, or was case just the eliminator for sums?
   -- * is let a suitable eliminator? but let's a checked term, not inferred
@@ -47,25 +54,57 @@ data Computation
   --   cases branch (justifying no inferred term for eliminating tuples).
   --
   -- ... actually we need case or there is no branching!
+  --
+  -- Introduction form: `Tuple Nonlinear` or `Tuple LinearUnpack`.
   | Case Computation     -- expression
          Type            -- type of the case expr
          (Vector Value)  -- expressions for each index
 
-  -- Type annotations mark the places where computation is still to be done, or
-  -- the "cuts". - I Got Plenty o' Nuttin'
-  | Annot Value Type
-  deriving Show
+  | Choose
+      Computation -- expression
+      Int         -- index of field to access
+
+  -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
+  -- could use == in the test spec
+  deriving (Eq, Show)
+
+
+-- | How a tuple can be used.
+--
+-- * 'Nonlinear': Can be accessed by pattern matching and field access as often
+--   as you like.
+-- * 'LinearUnpack': Eliminated exactly once by pattern matching all fields.
+-- * 'LinearProject': Eliminated exactly once by field access on one field.
+data TupleModality
+  = Nonlinear
+  | LinearUnpack
+  | LinearProject
+  deriving (Eq, Show)
+
 
 -- checked terms / introductions / values
 data Value
   = Lam Value
   | Primop Primop
-  | Prd (Vector Value)
   | Let Pattern Computation Value
   | Index Int
   | Primitive Primitive
   | Neu Computation
-  deriving Show
+
+  -- | Representation for all product types.
+  --
+  -- Nonlinear: The familiar tuple you know and love. Use with 'Case' or 'Choose'
+  -- LinearUnpack: 'Times'. Use with 'Case'.
+  -- LinearProject: 'With'. Use with 'Choose'.
+  --
+  -- Use with 'Case'.
+  | Tuple TupleModality (Vector Value)
+
+  -- | Sum with case analysis.
+  --
+  -- Use with 'Case'.
+  | Plus Int Value
+  deriving (Eq, Show)
 
 data Deriv
   -- computation
@@ -75,16 +114,20 @@ data Deriv
   | App2
   | CaseArg
   | CaseBranch Int
+  | ChooseArg
   | Annot'
+
   -- value
   | Lam'
   | Primop'
-  | Prd' Int
   | Let1
   | Let2
   | Index'
   | Primitive'
   | Neu'
+
+  | Tuple' Int
+  | Plus'
   deriving Show
 
 -- Match nested n-tuples.
@@ -93,14 +136,14 @@ data Deriv
 data Pattern
   = MatchTuple (Vector Pattern)
   | MatchVar Usage
-  deriving Show
+  deriving (Eq, Show)
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
 data Primitive
   = String String
   | Nat Int
-  deriving Show
+  deriving (Eq, Show)
 
 pattern NatV i = Primitive (Nat i)
 pattern StrV s = Primitive (String s)
@@ -114,7 +157,7 @@ data Primop
   | ConcatString
   | ToUpper
   | ToLower
-  deriving Show
+  deriving (Eq, Show)
 
 data PrimTy
   = StringTy
@@ -129,7 +172,9 @@ data Type
   -- to `Fin` in that it describes bounded nats.
   | IndexTy Int
   | LollyTy (Type, Usage) Type
-  | TupleTy (Vector Type)
+  | TimesTy (Vector Type)
+  | WithTy (Vector Type)
+  | PlusTy (Vector Type)
   deriving (Eq, Show)
 
 data Usage = Inexhaustible | UseOnce | Exhausted
@@ -185,7 +230,7 @@ inferPrimop :: Primop -> Type
 inferPrimop p =
   let nat = PrimTy NatTy
       str = PrimTy StringTy
-      tuple = TupleTy . V.fromList
+      tuple = TimesTy . V.fromList
   in case p of
        Add -> LollyTy (tuple [nat, nat], UseOnce) nat
        PrintNat -> LollyTy (nat, UseOnce) str
@@ -215,6 +260,7 @@ infer dirs ctx t = case t of
   App cTm vTm -> do
     (leftovers, cTmTy) <- infer (App1:dirs) ctx cTm
     case cTmTy of
+      -- XXX(joel) figure out this usage
       LollyTy (inTy, inUsage) outTy -> do
         leftovers2 <- check (App2:dirs) leftovers inTy vTm
         return (leftovers2, outTy)
@@ -234,7 +280,7 @@ infer dirs ctx t = case t of
         (CaseArg:dirs)
         "[infer Case] index mismatch"
       _ -> throwStackError (CaseArg:dirs)
-        "[infer Case] can't case on non-indices: "
+        "[infer Case] can't case on non-indices"
 
     branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) ctx ty vTm)
                         vTms
@@ -243,6 +289,21 @@ infer dirs ctx t = case t of
       "[infer Case] all branches must consume the same linear variables"
 
     return (V.head branchCtxs, ty)
+
+  Choose cTm idx -> do
+    (leftovers, cTmTy) <- infer (ChooseArg:dirs) ctx cTm
+
+    case cTmTy of
+      WithTy tys -> do
+        assert (idx < V.length tys) (ChooseArg:dirs)
+          "[infer Choose] index mismatch"
+        let usage = snd (head ctx)
+        -- TODO(joel) better api for variable use: strawman: pass in the index
+        -- of the var you want to access, get back the new context.
+        usage' <- useVar (ChooseArg:dirs) usage
+        return (leftovers & _head . _2 .~ usage', tys V.! idx)
+      _ -> throwStackError (ChooseArg:dirs)
+        "[infer Choose] can't access non-With"
 
   Annot vTm ty -> do
     leftovers <- check (Annot':dirs) ctx ty vTm
@@ -281,23 +342,48 @@ check dirs ctx ty tm = case tm of
         "[check Let] must consume linear bound variables"
     return leftovers2
 
-  Prd vTms -> case ty of
+  Tuple modality vTms -> case ty of
     -- Thread the leftover context through from left to right.
-    TupleTy tys ->
+    TimesTy tys -> do
+      assert (modality == LinearUnpack) dirs
+        "[check Tuple] tuple modality must be linear unpack for Times"
+
       -- Layer on a state transformer for this bit, since we're passing
       -- leftovers from one term to the next
       let calc = V.imapM
             (\i (tm', ty') -> do
-              let dirs' = (Prd' i):dirs
+              let dirs' = (Tuple' i):dirs
               leftovers <- get
               newLeftovers <- lift $ check dirs' leftovers ty' tm'
               put newLeftovers
             )
             (V.zip vTms tys)
+
       -- execState gives back the final state
-      in execStateT calc ctx
+      execStateT calc ctx
+
+
+    -- make sure each of the branches checks and consumes the same resources
+    WithTy tys -> do
+      assert (modality == LinearProject) dirs
+        "[check Tuple] tuple modality must be linear projection for With"
+
+      allLeftovers <- flip V.imapM vTms $ \i val -> do
+        check (Tuple' i:dirs) ctx (tys V.! i) val
+      assert (allTheSame (V.toList allLeftovers)) dirs
+        "[check WithTy] mismatching leftovers"
+      return (V.head allLeftovers)
+
     _ -> throwStackError dirs
-           "[check Prd] checking Prd agains non-product type"
+           "[check Tuple] checking Tuple against non-(TimesTy/WithTy)"
+
+  Plus idx val -> case ty of
+    PlusTy tys ->
+      let subTy = tys V.! idx
+      in check (Plus':dirs) ctx subTy val
+
+    _ -> throwStackError dirs
+           "[check Plus] checking Plus agains non-PlusTy"
 
   Primitive prim -> do
     case prim of
@@ -342,29 +428,47 @@ evalC env tm = case tm of
     case cTm' of
       Index branchIx ->
         case vTms V.!? branchIx of
-          Just branch -> evalV (cTm':env) branch
+          Just branch -> evalV env branch
           _ -> throwError "[evalC Case] couldn't find branch"
-      Primitive _p -> undefined
-      Prd _p -> undefined
-      Neu _cTm -> undefined
+      Tuple _ tupleTms -> do
+        -- TODO(joel) it feels like this duplicates tuple evaluation
+        tupleTms' <- forM tupleTms (evalV env)
+
+        -- We want the tuple terms to be bound from left to right, so we
+        -- reverse the value list
+        let newEnv = V.toList (V.reverse tupleTms') ++ env
+
+        when (V.length vTms /= 1) (throwError
+          "[evalC Case] case for Tuple must have exactly one branch"
+          )
+        evalV newEnv (V.head vTms)
       _ -> throwError "[evalC Case] unmatchable"
+  Choose cTm idx -> do
+    cTm' <- evalC env cTm
+    case cTm' of
+      Tuple _ valueVec -> do
+        let vTm = valueVec V.! idx
+        evalV env vTm
+      _ -> throwError "[evalC Choose] field not found"
   Annot vTm _ty -> evalV env vTm
 
 evalPrimop :: Primop -> Value -> Either String Value
-evalPrimop Add (Prd args)
+evalPrimop Add (Tuple _modality args)
   | [NatV x, NatV y] <- V.toList args
   = pure (NatV (x + y))
 evalPrimop PrintNat (NatV i) = pure (StrV (show i))
-evalPrimop ConcatString (Prd args)
+evalPrimop ConcatString (Tuple _modality args)
   | [StrV l, StrV r] <- V.toList args
   = pure (StrV (l ++ r))
 evalPrimop ToUpper (StrV s) = pure (StrV (map toUpper s))
 evalPrimop ToLower (StrV s) = pure (StrV (map toLower s))
-evalPrimop _ _ = throwError "unexpected arguments to evalPrimop"
+evalPrimop x y = throwError ("unexpected arguments to evalPrimop: " ++ show (x, y))
 
 evalV :: [Value] -> Value -> Either String Value
 evalV env tm = case tm of
-  Prd vTms -> Prd <$> (mapM (evalV env) vTms)
+  -- TODO(joel) only force / evaluate one field if modality is LinearProject
+  Tuple modality vTms -> Tuple modality <$> mapM (evalV env) vTms
+  Plus _ _ -> throwError "[evalV Plus] evaluating uneliminated Plus"
   Let _pat cTm vTm -> do
     cTm' <- evalC env cTm
     evalV (cTm':env) vTm
@@ -372,7 +476,7 @@ evalV env tm = case tm of
   Lam _ -> pure tm
   Primitive _ -> pure tm
   Index _ -> pure tm
-  Neu _ -> pure tm
+  Neu cTm -> evalC env cTm
 
 -- TODO we don't actually use the implementation of opening -- I had just
 -- pre-emptively defined it thinking it would be used.
@@ -383,12 +487,14 @@ openC k x tm = case tm of
   App cTm vTm -> App (openC k x cTm) (openV k x vTm)
   Case cTm ty vTms ->
     Case (openC k x cTm) ty (V.map (openV (k + 1) x) vTms)
+  Choose cTm i -> Choose (openC k x cTm) i
   Annot vTm ty -> Annot (openV k x vTm) ty
 
 openV :: Int -> String -> Value -> Value
 openV k x tm = case tm of
   Lam vTm -> Lam (openV (k + 1) x vTm)
-  Prd vTms -> Prd (V.map (openV k x) vTms)
+  Tuple modality vTms -> Tuple modality (V.map (openV k x) vTms)
+  Plus i vTm -> Plus i (openV k x vTm)
   Let pat cTm vTm ->
     let bindingSize = patternSize pat
     in Let pat (openC k x cTm) (openV (k + bindingSize) x vTm)
@@ -405,7 +511,7 @@ typePattern (MatchVar usage) ty = pure [(ty, usage)]
 -- (MatchVar, MatchTuple (MatchVar, MatchVar))
 --           v
 -- [[ty0], [ty1, ty2]]
-typePattern (MatchTuple subPats) (TupleTy subTys) = do
+typePattern (MatchTuple subPats) (TimesTy subTys) = do
   let zipped = V.zip subPats subTys
   twoLevelTypes <- mapM (uncurry typePattern) zipped
   return (concat twoLevelTypes)
