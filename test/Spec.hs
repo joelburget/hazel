@@ -1,4 +1,4 @@
-module Spec where
+module Main where
 
 import qualified Data.Vector as V
 import Test.Hspec
@@ -126,7 +126,9 @@ main = hspec $ do
             LinearUnpack
             (V.fromList [Primitive (String "0"), Primitive (String "STRING")])
           )
-    it "checks" $ runChecker checker `shouldBe` "success!"
+    -- Currently disabled -- re-enable when merged with Brian's sum type
+    -- changes.
+    -- it "checks" $ runChecker checker `shouldBe` "success!"
     it "evaluates" $ evalC [] timesExample `shouldBe` expected
 
   describe "plus" $ do
