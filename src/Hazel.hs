@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -34,6 +35,8 @@ import Data.Char (toUpper, toLower)
 import Data.Foldable (foldl')
 import Data.Vector (Vector)
 import qualified Data.Vector as V
+import Data.Aeson (ToJSON)
+import GHC.Generics
 
 
 -- inferred terms / eliminations / neutral terms
@@ -70,7 +73,9 @@ data Computation
 
   -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
   -- could use == in the test spec
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Computation
 
 
 -- | How a tuple can be used.
@@ -83,7 +88,9 @@ data TupleModality
   = Nonlinear
   | LinearUnpack
   | LinearProject
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON TupleModality
 
 
 -- checked terms / introductions / values
@@ -108,7 +115,9 @@ data Value
   --
   -- Use with 'Case'.
   | Plus Int Value
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Value
 
 data Deriv
   -- computation
@@ -133,7 +142,9 @@ data Deriv
 
   | Tuple' Int
   | Plus'
-  deriving Show
+  deriving (Generic, Show)
+
+instance ToJSON Deriv
 
 -- Match nested n-tuples.
 --
@@ -141,14 +152,18 @@ data Deriv
 data Pattern
   = MatchTuple (Vector Pattern)
   | MatchVar Usage
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Pattern
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
 data Primitive
   = String String
   | Nat Int
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Primitive
 
 pattern NatV i = Primitive (Nat i)
 pattern StrV s = Primitive (String s)
@@ -162,12 +177,16 @@ data Primop
   | ConcatString
   | ToUpper
   | ToLower
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Primop
 
 data PrimTy
   = StringTy
   | NatTy
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON PrimTy
 
 data Type
   = PrimTy PrimTy
@@ -181,10 +200,14 @@ data Type
   | TimesTy (Vector Type)
   | WithTy (Vector Type)
   | PlusTy (Vector Type)
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Type
 
 data Usage = Inexhaustible | UseOnce | Exhausted
-  deriving (Eq, Show)
+  deriving (Generic, Eq, Show)
+
+instance ToJSON Usage
 
 useVar :: MonadError String m => LocationDirections -> Usage -> m Usage
 useVar _ Inexhaustible = pure Inexhaustible
