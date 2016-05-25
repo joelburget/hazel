@@ -74,15 +74,11 @@ data Computation
 
 
 -- | How a tuple can be used.
---
--- * 'Nonlinear': Can be accessed by pattern matching and field access as often
---   as you like.
--- * 'LinearUnpack': Eliminated exactly once by pattern matching all fields.
--- * 'LinearProject': Eliminated exactly once by field access on one field.
 data TupleModality
-  = Nonlinear
-  | LinearUnpack
-  | LinearProject
+  = Nonlinear     -- ^ Can be accessed by pattern matching and field access as
+                  -- often as you like.
+  | LinearUnpack  -- ^ Eliminated exactly once by pattern matching all fields.
+  | LinearProject -- ^ Eliminated exactly once by field access on one field.
   deriving (Eq, Show)
 
 
