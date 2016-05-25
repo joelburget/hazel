@@ -31,6 +31,7 @@ import Control.Monad.Error.Class
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Char (toUpper, toLower)
+import Data.Foldable (foldl')
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 
@@ -63,6 +64,9 @@ data Computation
   | Choose
       Computation -- expression
       Int         -- index of field to access
+
+  | Unpack (Computation, Usage)
+           (Value, Type)
 
   -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
   -- could use == in the test spec
@@ -115,6 +119,7 @@ data Deriv
   | CaseArg
   | CaseBranch Int
   | ChooseArg
+  | Unpack'
   | Annot'
 
   -- value
@@ -171,7 +176,8 @@ data Type
   -- `IndexTy 2` is the type of `Index 0` and `Index 1`. This type is analogous
   -- to `Fin` in that it describes bounded nats.
   | IndexTy Int
-  | LollyTy (Type, Usage) Type
+  | LollyTy (Type, Usage) Type -- TODO(bts): probably remove Usage here
+  | TupleTy (Vector Type)
   | TimesTy (Vector Type)
   | WithTy (Vector Type)
   | PlusTy (Vector Type)
@@ -226,6 +232,7 @@ inferVar dirs ctx k = do
   return (ctx & ix k . _2 .~ usage', ty)
 
 -- Type inference for primops is entirely non-dependent on the environment.
+-- TODO(bts): add support for non-linear primops
 inferPrimop :: Primop -> Type
 inferPrimop p =
   let nat = PrimTy NatTy
@@ -249,6 +256,9 @@ throwStackError dirs str =
   -- the outermost to appear at the top and innermost to appear at the bottom.
   let stackStr = unlines (map show (reverse dirs))
   in throwError $ stackStr ++ "\n" ++ str
+
+reverseConcat :: Foldable t => t a -> [a] -> [a]
+xs `reverseConcat` ys = foldl' (flip (:)) ys xs
 
 infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
 infer dirs ctx t = case t of
@@ -282,7 +292,7 @@ infer dirs ctx t = case t of
       _ -> throwStackError (CaseArg:dirs)
         "[infer Case] can't case on non-indices"
 
-    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) ctx ty vTm)
+    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) leftovers ty vTm)
                         vTms
 
     assert (allTheSame (V.toList branchCtxs)) dirs
@@ -304,6 +314,16 @@ infer dirs ctx t = case t of
         return (leftovers & _head . _2 .~ usage', tys V.! idx)
       _ -> throwStackError (ChooseArg:dirs)
         "[infer Choose] can't access non-With"
+
+  Unpack (cTm, usage) (vTm, ty) -> do
+    (leftovers, cTmTy) <- infer (Unpack':dirs) ctx cTm
+    tupTys <- case cTmTy of
+                TupleTy allTupTys -> return allTupTys
+                _ -> throwStackError (Unpack':dirs)
+                  ("[infer Unpack] can't unpack a non-tuple: " ++ show cTmTy)
+    let newCtx = ((,usage) <$> tupTys) `reverseConcat` leftovers
+    leftovers' <- check (Unpack':dirs) newCtx ty vTm
+    return (leftovers', ty)
 
   Annot vTm ty -> do
     leftovers <- check (Annot':dirs) ctx ty vTm
@@ -429,20 +449,9 @@ evalC env tm = case tm of
       Index branchIx ->
         case vTms V.!? branchIx of
           Just branch -> evalV env branch
-          _ -> throwError "[evalC Case] couldn't find branch"
-      Tuple _ tupleTms -> do
-        -- TODO(joel) it feels like this duplicates tuple evaluation
-        tupleTms' <- forM tupleTms (evalV env)
-
-        -- We want the tuple terms to be bound from left to right, so we
-        -- reverse the value list
-        let newEnv = V.toList (V.reverse tupleTms') ++ env
-
-        when (V.length vTms /= 1) (throwError
-          "[evalC Case] case for Tuple must have exactly one branch"
-          )
-        evalV newEnv (V.head vTms)
-      _ -> throwError "[evalC Case] unmatchable"
+          _ -> throwError
+            ("[evalC Case] couldn't find branch for index " ++ show branchIx)
+      _ -> throwError $ "[evalC Case] can't case on non-index " ++ show cTm'
   Choose cTm idx -> do
     cTm' <- evalC env cTm
     case cTm' of
@@ -450,6 +459,11 @@ evalC env tm = case tm of
         let vTm = valueVec V.! idx
         evalV env vTm
       _ -> throwError "[evalC Choose] field not found"
+  Unpack (cTm, _usage) (vTm, _ty) -> do
+    cTm' <- evalC env cTm
+    case cTm' of
+      Tuple _ tupTms -> evalV (tupTms `reverseConcat` env) vTm
+      _ -> throwError $ "[evalC Unpack] can't unpack non-tuple: " ++ show cTm'
   Annot vTm _ty -> evalV env vTm
 
 evalPrimop :: Primop -> Value -> Either String Value
@@ -486,8 +500,11 @@ openC k x tm = case tm of
   FVar _ -> tm
   App cTm vTm -> App (openC k x cTm) (openV k x vTm)
   Case cTm ty vTms ->
-    Case (openC k x cTm) ty (V.map (openV (k + 1) x) vTms)
+    Case (openC k x cTm) ty (V.map (openV k x) vTms)
   Choose cTm i -> Choose (openC k x cTm) i
+  Unpack (cTm, usage) (vTm, ty) ->
+    let tupWidth = error "TODO: possibly switch to 2D debruijn?"
+    in Unpack ((openC k x cTm), usage) (openV (k + tupWidth) x vTm, ty)
   Annot vTm ty -> Annot (openV k x vTm) ty
 
 openV :: Int -> String -> Value -> Value
@@ -511,11 +528,14 @@ typePattern (MatchVar usage) ty = pure [(ty, usage)]
 -- (MatchVar, MatchTuple (MatchVar, MatchVar))
 --           v
 -- [[ty0], [ty1, ty2]]
-typePattern (MatchTuple subPats) (TimesTy subTys) = do
+typePattern (MatchTuple subPats) tupleTy = do
+  subTys <- case tupleTy of
+              TimesTy ts -> return ts
+              TupleTy ts -> return ts
+              _ -> throwError "[typePattern] misaligned pattern"
   let zipped = V.zip subPats subTys
   twoLevelTypes <- mapM (uncurry typePattern) zipped
   return (concat twoLevelTypes)
-typePattern _ _ = throwError "[typePattern] misaligned pattern"
 
 patternSize :: Pattern -> Int
 patternSize (MatchVar _0) = 1

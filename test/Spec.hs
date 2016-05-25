@@ -71,8 +71,7 @@ timesExample =
             (bVar 0)
           )
         ])
-      branches = V.singleton f
-  in Case (Annot tuple tupleTy) natTy branches
+  in Unpack (Annot tuple tupleTy, UseOnce) (f, natTy)
 
 -- > let x = "foo" in case False of
 --     False -> concatString x "bar"
