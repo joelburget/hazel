@@ -1,9 +1,9 @@
 import React from 'react';
 import { storiesOf, action } from '@kadira/storybook';
 
-import Computation from '../Computation';
+import Editor from '../Editor';
 
-storiesOf('Computation', module)
+storiesOf('Editor', module)
   .add('... basic...', () => (
-    <Computation action={action} />
+    <Editor action={action} />
   ))

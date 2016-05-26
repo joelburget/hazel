@@ -2,7 +2,7 @@ import { configure } from '@kadira/storybook';
 
 function loadStories() {
   require('./hole');
-  require('./computation');
+  require('./editor');
 }
 
 configure(loadStories, module);
