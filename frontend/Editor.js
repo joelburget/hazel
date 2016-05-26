@@ -1,77 +1,45 @@
-import React from 'react';
+import Autosuggest from 'react-autosuggest';
+import { List } from 'immutable';
 import {
   CompositeDecorator,
   ContentState,
   Editor,
   EditorState,
+  Entity,
 } from 'draft-js';
-import Autosuggest from 'react-autosuggest';
+import React from 'react';
 
-const computationHeads = [
-  'bvar',
-  'hole', // XXX (fvar)
-  'app',
-  'annot',
-  'case',
-  'choose',
-  'unpack',
-];
-const cHeadRegex = new RegExp(computationHeads.join("|"), 'g');
-
-const valueHeads = [
-  'lam',
-  'primop',
-  'let',
-  'primitive',
-  'index',
-  'neu',
-  'tuple',
-  'plus',
-];
-const vHeadRegex = new RegExp(valueHeads.join("|"), 'g');
-
-function cHeadStrategy(contentBlock, callback) {
-  findWithRegex(cHeadRegex, contentBlock, callback);
-}
-
-function vHeadStrategy(contentBlock, callback) {
-  findWithRegex(vHeadRegex, contentBlock, callback);
-}
-
-function findWithRegex(regex, contentBlock, callback) {
-  const text = contentBlock.getText();
-  let matchArr, start;
-  while ((matchArr = regex.exec(text)) !== null) {
-    start = matchArr.index;
-    callback(start, start + matchArr[0].length);
-  }
-}
-
-const Computation = props => {
-  return (
-    <span {...props} style={styles.computation}>{props.children}</span>
-  );
-}
-
-const Value = props => {
-  return (
-    <span {...props} style={styles.value}>{props.children}</span>
-  );
-}
-
-// TODO: shouldn't this just be a DraftDecorator, since it's not composing
-// decorators?
-// https://github.com/facebook/draft-js/blob/master/src/model/decorators/DraftDecoratorType.js
-const ComputationDecorator = new CompositeDecorator([
-  {
-    strategy: cHeadStrategy,
-    component: Computation,
+const components = {
+  FVar: ({children}) => (
+    <span style={styles.computation}>{children}</span>
+  ),
+  Primitive: ({children}) => {
+    return <span style={styles.computation}>{children}</span>
   },
-  {
-    strategy: vHeadStrategy,
-    component: Value,
+};
+
+const DataDecorator = {
+  getDecorations(block: ContentBlock): List<?string> {
+    const length = block.getLength();
+    const arr = [];
+    for (var i = 0; i < length; i ++) {
+      const key = block.getEntityAt(i);
+      arr.push(key);
+    }
+
+    return List(arr);
   },
-]);
+
+  getComponentForKey(key: string): Function {
+    const entity = Entity.get(key);
+    const tyName = entity.data.type;
+    return components[tyName];
+  },
+
+  getPropsForKey(key: string): ?Object {
+    return null;
+  },
+};
 
 // editor to fill a hole where a computation is expected
 export default class HazelEditor extends React.Component {
@@ -79,16 +47,16 @@ export default class HazelEditor extends React.Component {
     super(props);
     this.state = {
       editorState: EditorState.createWithContent(
-        ContentState.createFromText('lam(bvar(0))'),
-        ComputationDecorator
+        props.content,
+        DataDecorator
       )
     };
     this.onChange = change => this._onChange(change);
   }
 
   _onChange(editorState) {
-    this.props.action('change')(editorState.getCurrentContent());
-    this.setState({editorState})
+    this.props.onChange(editorState.getCurrentContent());
+    this.setState({editorState});
   }
 
   render() {
