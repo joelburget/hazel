@@ -2,6 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE PatternSynonyms #-}
+
 module Hazel where
 
 -- Significant features of this treatment include:
@@ -57,16 +58,19 @@ data Computation
   -- ... actually we need case or there is no branching!
   --
   -- Introduction form: `Tuple Nonlinear` or `Tuple LinearUnpack`.
-  | Case Computation     -- expression
-         Type            -- type of the case expr
-         (Vector Value)  -- expressions for each index
+  | Case Computation     -- ^ expression
+         -- TODO(bts): figure out how we can eventually get rid of this type
+         Type            -- ^ type of the case expr
+         (Vector Value)  -- ^ expressions for each index
 
   | Choose
       Computation -- expression
       Int         -- index of field to access
 
-  | Unpack (Computation, Usage)
-           (Value, Type)
+  | Unpack (Computation, Usage) -- TODO(bts): with full type (vs only pretype)
+                                -- inference, does this Usage go away?
+           (Value, Type)        -- TODO(bts): figure out how to eventually
+                                -- remove this Type
 
   -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
   -- could use == in the test spec
@@ -98,7 +102,9 @@ data Value
   -- LinearProject: 'With'. Use with 'Choose'.
   --
   -- Use with 'Case'.
-  | Tuple TupleModality (Vector Value)
+  | Tuple TupleModality (Vector Value) -- TODO(bts): TupleModality should
+                                       -- probably live at the type level, and
+                                       -- we should have erasure instead.
 
   -- | Sum with case analysis.
   --
@@ -200,6 +206,7 @@ type LocationDirections = [Deriv]
 -- Unlike in "Typing with Leftovers" we bundle typing and usage together in the
 -- same data structure. This list is de-bruijn indexed, so to get the type and
 -- usage of `BVar i` we access `ctx !! i`.
+-- TODO: extract type/pretype distinction
 type Ctx = [(Type, Usage)]
 
 -- I (Joel) made the explicit choice to not use the state monad to track
