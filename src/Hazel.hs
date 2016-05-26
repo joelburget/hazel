@@ -355,8 +355,9 @@ check dirs ctx ty tm = case tm of
     return leftovers2
 
   Tuple modality vTms -> do
+    -- We thread leftovers through each of the terms (using state) in the Times
+    -- and Tuple cases:
     let threadedLeftovers tms tys =
-          -- We use state to pass leftovers from one term to the next
           let calc = V.imapM
                 (\i (tm', ty') -> do
                   let dirs' = (Tuple' i):dirs
