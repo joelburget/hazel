@@ -419,8 +419,9 @@ check dirs ctx ty tm = case tm of
 
   Neu cTm -> do
     (leftovers, cTmTy) <- infer (Neu':dirs) ctx cTm
-    assert (cTmTy == ty) (Neu':dirs)
-      "[check Neu] checking inferred neutral type"
+    assert (cTmTy == ty) (Neu':dirs) $
+      "[check Neu] inferred type of neutral term ( " ++ show cTmTy ++ " ) " ++
+        "does not match expected (checked) type: " ++ show ty
     return leftovers
 
 checkToplevel :: Type -> Value -> Either String Ctx
