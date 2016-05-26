@@ -349,7 +349,7 @@ check dirs ctx ty tm = case tm of
     -- only have the pretype:
     let fakeIncorrectUsage = UseOnce
         bodyCtx = (rhsTy, fakeIncorrectUsage):leftovers
-    leftovers2@((_, usedRhs):_) <- check (Let2:dirs) bodyCtx ty vTm
+    ((_, usedRhs):leftovers2) <- check (Let2:dirs) bodyCtx ty vTm
     assert (usedRhs /= UseOnce) dirs
       "[check Let] must consume linear bound variables"
     return leftovers2
