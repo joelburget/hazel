@@ -367,40 +367,46 @@ check dirs ctx ty tm = case tm of
         "[check Let] must consume linear bound variables"
     return leftovers2
 
-  Tuple modality vTms -> case ty of
-    -- Thread the leftover context through from left to right.
-    TimesTy tys -> do
-      assert (modality == LinearUnpack) dirs
-        "[check Tuple] tuple modality must be linear unpack for Times"
+  Tuple modality vTms -> do
+    let threadedLeftovers tms tys =
+          -- We use state to pass leftovers from one term to the next
+          let calc = V.imapM
+                (\i (tm', ty') -> do
+                  let dirs' = (Tuple' i):dirs
+                  leftovers <- get
+                  newLeftovers <- lift $ check dirs' leftovers ty' tm'
+                  put newLeftovers
+                )
+                (V.zip tms tys)
+          in execStateT calc ctx
 
-      -- Layer on a state transformer for this bit, since we're passing
-      -- leftovers from one term to the next
-      let calc = V.imapM
-            (\i (tm', ty') -> do
-              let dirs' = (Tuple' i):dirs
-              leftovers <- get
-              newLeftovers <- lift $ check dirs' leftovers ty' tm'
-              put newLeftovers
-            )
-            (V.zip vTms tys)
+    case ty of
+      -- Thread the leftover context through from left to right.
+      TimesTy tys -> do
+        assert (modality == LinearUnpack) dirs
+          "[check Tuple] tuple modality must be linear unpack for Times"
 
-      -- execState gives back the final state
-      execStateT calc ctx
+        threadedLeftovers vTms tys
 
+      -- make sure each of the branches checks and consumes the same resources
+      WithTy tys -> do
+        assert (modality == LinearProject) dirs
+          "[check Tuple] tuple modality must be linear projection for With"
 
-    -- make sure each of the branches checks and consumes the same resources
-    WithTy tys -> do
-      assert (modality == LinearProject) dirs
-        "[check Tuple] tuple modality must be linear projection for With"
+        allLeftovers <- flip V.imapM vTms $ \i val ->
+          check (Tuple' i:dirs) ctx (tys V.! i) val
+        assert (allTheSame (V.toList allLeftovers)) dirs
+          "[check WithTy] mismatching leftovers"
+        return (V.head allLeftovers)
 
-      allLeftovers <- flip V.imapM vTms $ \i val -> do
-        check (Tuple' i:dirs) ctx (tys V.! i) val
-      assert (allTheSame (V.toList allLeftovers)) dirs
-        "[check WithTy] mismatching leftovers"
-      return (V.head allLeftovers)
+      TupleTy tys -> do
+        assert (modality == Nonlinear) dirs
+          "[check Tuple] tuple modality must be nonlinear for TupleTy"
 
-    _ -> throwStackError dirs
-           "[check Tuple] checking Tuple against non-(TimesTy/WithTy)"
+        threadedLeftovers vTms tys
+
+      _ -> throwStackError dirs
+             "[check Tuple] checking Tuple against non-(TupleTy/TimesTy/WithTy)"
 
   Plus idx val -> case ty of
     PlusTy tys ->
