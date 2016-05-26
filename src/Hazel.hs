@@ -315,9 +315,8 @@ infer dirs ctx t = case t of
     tupTys <- case cTmTy of
                 TupleTy tupTys -> return tupTys
                 TimesTy tupTys -> return tupTys
-                WithTy tupTys -> return tupTys
-                _ -> throwStackError (Unpack':dirs)
-                  ("[infer Unpack] can't unpack a non-tuple: " ++ show cTmTy)
+                _ -> throwStackError (Unpack':dirs) $
+                  "[infer Unpack] can't unpack a non-times/tuple: " ++ show cTmTy
     let newCtx = ((,usage) <$> tupTys) `reverseConcat` leftovers
     leftovers' <- check (Unpack':dirs) newCtx ty vTm
     return (leftovers', ty)
