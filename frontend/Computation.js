@@ -5,6 +5,7 @@ import {
   Editor,
   EditorState,
 } from 'draft-js';
+import Autosuggest from 'react-autosuggest';
 
 const computationHeads = [
   'bvar',

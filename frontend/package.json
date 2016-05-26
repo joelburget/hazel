@@ -10,8 +10,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@kadira/storybook": "^1.28.1",
     "draft-js": "^0.7.0",
     "react": "^15.1.0",
+    "react-autosuggest": "^3.7.4",
     "react-dom": "^15.1.0"
   },
   "devDependencies": {
