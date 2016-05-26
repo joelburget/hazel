@@ -16,10 +16,12 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Hazel
+                       Hazel.Var
   build-depends:       base >= 4.7 && < 5
-                     , vector
-                     , mtl
                      , lens
+                     , mtl
+                     , text >= 1.2.2.1 && < 1.3
+                     , vector
   default-language:    Haskell2010
 
 executable hazel-exe
