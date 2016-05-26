@@ -90,7 +90,7 @@ data TupleModality
 data Value
   = Lam Value
   | Primop Primop
-  | Let Pattern Computation Value
+  | Let Computation Value
   | Index Int
   | Primitive Primitive
   | Neu Computation
@@ -136,14 +136,6 @@ data Deriv
   | Tuple' Int
   | Plus'
   deriving Show
-
--- Match nested n-tuples.
---
--- Easy extension: `Underscore` doesn't bind any variables. Useful?
-data Pattern
-  = MatchTuple (Vector Pattern)
-  | MatchVar Usage
-  deriving (Eq, Show)
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
@@ -352,19 +344,15 @@ check dirs ctx ty tm = case tm of
       "[check Primop] primop (" ++ show p ++ ") type mismatch"
     return ctx
 
-  Let pat letTm vTm -> do
-    (leftovers, tmTy) <- infer (Let1:dirs) ctx letTm
-    patternTy <- typePattern pat tmTy
-    -- XXX do we need to reverse these?
-    let bodyCtx = patternTy ++ leftovers
-        arity = length patternTy
-    newCtx <- check (Let2:dirs) bodyCtx ty vTm
-
-    -- Check that the body consumed all the arguments
-    let (bodyUsage, leftovers2) = splitAt arity newCtx
-    forM_ bodyUsage $ \(_ty, usage) ->
-      assert (usage /= UseOnce) dirs
-        "[check Let] must consume linear bound variables"
+  Let rhsTm vTm -> do
+    (leftovers, rhsTy) <- infer (Let1:dirs) ctx rhsTm
+    -- FIXME: the real usage should flow from inference, whereas we currently
+    -- only have the pretype:
+    let fakeIncorrectUsage = UseOnce
+        bodyCtx = (rhsTy, fakeIncorrectUsage):leftovers
+    leftovers2@((_, usedRhs):_) <- check (Let2:dirs) bodyCtx ty vTm
+    assert (usedRhs /= UseOnce) dirs
+      "[check Let] must consume linear bound variables"
     return leftovers2
 
   Tuple modality vTms -> do
@@ -495,7 +483,7 @@ evalV env tm = case tm of
   -- TODO(joel) only force / evaluate one field if modality is LinearProject
   Tuple modality vTms -> Tuple modality <$> mapM (evalV env) vTms
   Plus _ _ -> throwError "[evalV Plus] evaluating uneliminated Plus"
-  Let _pat cTm vTm -> do
+  Let cTm vTm -> do
     cTm' <- evalC env cTm
     evalV (cTm':env) vTm
   Primop _ -> pure tm
@@ -524,31 +512,8 @@ openV k x tm = case tm of
   Lam vTm -> Lam (openV (k + 1) x vTm)
   Tuple modality vTms -> Tuple modality (V.map (openV k x) vTms)
   Plus i vTm -> Plus i (openV k x vTm)
-  Let pat cTm vTm ->
-    let bindingSize = patternSize pat
-    in Let pat (openC k x cTm) (openV (k + bindingSize) x vTm)
+  Let cTm vTm -> Let (openC k x cTm) (openV (k + 1) x vTm)
   Index _ -> tm
   Primitive _ -> tm
   Primop _ -> tm
   Neu cTm -> Neu (openC k x cTm)
-
-typePattern :: MonadError String m => Pattern -> Type -> m [(Type, Usage)]
-typePattern (MatchVar usage) ty = pure [(ty, usage)]
--- TODO check these line up (subPats / subTys)
---
--- example:
--- (MatchVar, MatchTuple (MatchVar, MatchVar))
---           v
--- [[ty0], [ty1, ty2]]
-typePattern (MatchTuple subPats) tupleTy = do
-  subTys <- case tupleTy of
-              TimesTy ts -> return ts
-              TupleTy ts -> return ts
-              _ -> throwError "[typePattern] misaligned pattern"
-  let zipped = V.zip subPats subTys
-  twoLevelTypes <- mapM (uncurry typePattern) zipped
-  return (concat twoLevelTypes)
-
-patternSize :: Pattern -> Int
-patternSize (MatchVar _0) = 1
-patternSize (MatchTuple subPats) = sum (V.map patternSize subPats)

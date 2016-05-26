@@ -21,17 +21,18 @@ nat = Primitive . Nat
 
 -- \(x, y) -> (y, x)
 swap :: Value
-swap = Lam (Let
-  (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
-  (BVar 0)
-  (Tuple LinearUnpack (V.fromList [bVar 1, bVar 0]))
-  )
+swap = Lam (Neu $ Unpack (BVar 0, UseOnce)
+                         -- most recently bound (0, right side of tuple),
+                         -- followed by previously bound (1, left side of tuple)
+                         ( Tuple LinearUnpack (V.fromList [bVar 0, bVar 1])
+                         , (TimesTy (V.fromList [natTy, strTy]))))
+
 
 -- let (x, y) = \z -> z in (x, y)
 illTyped :: Value
 illTyped = Let
-  (MatchTuple (V.fromList [MatchVar UseOnce, MatchVar UseOnce]))
-  (Annot (Lam (bVar 0)) (LollyTy (natTy, UseOnce) natTy))
+  (Annot (Lam (bVar 0))
+         (LollyTy (natTy, UseOnce) natTy))
   (Tuple LinearUnpack (V.fromList [bVar 0, bVar 1]))
 
 -- \x -> (x, x)
