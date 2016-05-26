@@ -2,6 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE PatternSynonyms #-}
+
 module Hazel where
 
 -- Significant features of this treatment include:
@@ -57,16 +58,19 @@ data Computation
   -- ... actually we need case or there is no branching!
   --
   -- Introduction form: `Tuple Nonlinear` or `Tuple LinearUnpack`.
-  | Case Computation     -- expression
-         Type            -- type of the case expr
-         (Vector Value)  -- expressions for each index
+  | Case Computation     -- ^ expression
+         -- TODO(bts): figure out how we can eventually get rid of this type
+         Type            -- ^ type of the case expr
+         (Vector Value)  -- ^ expressions for each index
 
   | Choose
       Computation -- expression
       Int         -- index of field to access
 
-  | Unpack (Computation, Usage)
-           (Value, Type)
+  | Unpack (Computation, Usage) -- TODO(bts): with full type (vs only pretype)
+                                -- inference, does this Usage go away?
+           (Value, Type)        -- TODO(bts): figure out how to eventually
+                                -- remove this Type
 
   -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
   -- could use == in the test spec
@@ -74,15 +78,11 @@ data Computation
 
 
 -- | How a tuple can be used.
---
--- * 'Nonlinear': Can be accessed by pattern matching and field access as often
---   as you like.
--- * 'LinearUnpack': Eliminated exactly once by pattern matching all fields.
--- * 'LinearProject': Eliminated exactly once by field access on one field.
 data TupleModality
-  = Nonlinear
-  | LinearUnpack
-  | LinearProject
+  = Nonlinear     -- ^ Can be accessed by pattern matching and field access as
+                  -- often as you like.
+  | LinearUnpack  -- ^ Eliminated exactly once by pattern matching all fields.
+  | LinearProject -- ^ Eliminated exactly once by field access on one field.
   deriving (Eq, Show)
 
 
@@ -90,7 +90,7 @@ data TupleModality
 data Value
   = Lam Value
   | Primop Primop
-  | Let Pattern Computation Value
+  | Let Computation Value
   | Index Int
   | Primitive Primitive
   | Neu Computation
@@ -102,7 +102,9 @@ data Value
   -- LinearProject: 'With'. Use with 'Choose'.
   --
   -- Use with 'Case'.
-  | Tuple TupleModality (Vector Value)
+  | Tuple TupleModality (Vector Value) -- TODO(bts): TupleModality should
+                                       -- probably live at the type level, and
+                                       -- we should have erasure instead.
 
   -- | Sum with case analysis.
   --
@@ -134,14 +136,6 @@ data Deriv
   | Tuple' Int
   | Plus'
   deriving Show
-
--- Match nested n-tuples.
---
--- Easy extension: `Underscore` doesn't bind any variables. Useful?
-data Pattern
-  = MatchTuple (Vector Pattern)
-  | MatchVar Usage
-  deriving (Eq, Show)
 
 -- floating point numbers suck http://blog.plover.com/prog/#fp-sucks
 -- (so do dates and times)
@@ -204,6 +198,7 @@ type LocationDirections = [Deriv]
 -- Unlike in "Typing with Leftovers" we bundle typing and usage together in the
 -- same data structure. This list is de-bruijn indexed, so to get the type and
 -- usage of `BVar i` we access `ctx !! i`.
+-- TODO: extract type/pretype distinction
 type Ctx = [(Type, Usage)]
 
 -- I (Joel) made the explicit choice to not use the state monad to track
@@ -318,9 +313,10 @@ infer dirs ctx t = case t of
   Unpack (cTm, usage) (vTm, ty) -> do
     (leftovers, cTmTy) <- infer (Unpack':dirs) ctx cTm
     tupTys <- case cTmTy of
-                TupleTy allTupTys -> return allTupTys
-                _ -> throwStackError (Unpack':dirs)
-                  ("[infer Unpack] can't unpack a non-tuple: " ++ show cTmTy)
+                TupleTy tupTys -> return tupTys
+                TimesTy tupTys -> return tupTys
+                _ -> throwStackError (Unpack':dirs) $
+                  "[infer Unpack] can't unpack a non-times/tuple: " ++ show cTmTy
     let newCtx = ((,usage) <$> tupTys) `reverseConcat` leftovers
     leftovers' <- check (Unpack':dirs) newCtx ty vTm
     return (leftovers', ty)
@@ -347,55 +343,58 @@ check dirs ctx ty tm = case tm of
       "[check Primop] primop (" ++ show p ++ ") type mismatch"
     return ctx
 
-  Let pat letTm vTm -> do
-    (leftovers, tmTy) <- infer (Let1:dirs) ctx letTm
-    patternTy <- typePattern pat tmTy
-    -- XXX do we need to reverse these?
-    let bodyCtx = patternTy ++ leftovers
-        arity = length patternTy
-    newCtx <- check (Let2:dirs) bodyCtx ty vTm
-
-    -- Check that the body consumed all the arguments
-    let (bodyUsage, leftovers2) = splitAt arity newCtx
-    forM_ bodyUsage $ \(_ty, usage) ->
-      assert (usage /= UseOnce) dirs
-        "[check Let] must consume linear bound variables"
+  Let rhsTm vTm -> do
+    (leftovers, rhsTy) <- infer (Let1:dirs) ctx rhsTm
+    -- FIXME: the real usage should flow from inference, whereas we currently
+    -- only have the pretype:
+    let fakeIncorrectUsage = UseOnce
+        bodyCtx = (rhsTy, fakeIncorrectUsage):leftovers
+    ((_, usedRhs):leftovers2) <- check (Let2:dirs) bodyCtx ty vTm
+    assert (usedRhs /= UseOnce) dirs
+      "[check Let] must consume linear bound variables"
     return leftovers2
 
-  Tuple modality vTms -> case ty of
-    -- Thread the leftover context through from left to right.
-    TimesTy tys -> do
-      assert (modality == LinearUnpack) dirs
-        "[check Tuple] tuple modality must be linear unpack for Times"
+  Tuple modality vTms -> do
+    -- We thread leftovers through each of the terms (using state) in the Times
+    -- and Tuple cases:
+    let threadedLeftovers tms tys =
+          let calc = V.imapM
+                (\i (tm', ty') -> do
+                  let dirs' = (Tuple' i):dirs
+                  leftovers <- get
+                  newLeftovers <- lift $ check dirs' leftovers ty' tm'
+                  put newLeftovers
+                )
+                (V.zip tms tys)
+          in execStateT calc ctx
 
-      -- Layer on a state transformer for this bit, since we're passing
-      -- leftovers from one term to the next
-      let calc = V.imapM
-            (\i (tm', ty') -> do
-              let dirs' = (Tuple' i):dirs
-              leftovers <- get
-              newLeftovers <- lift $ check dirs' leftovers ty' tm'
-              put newLeftovers
-            )
-            (V.zip vTms tys)
+    case ty of
+      -- Thread the leftover context through from left to right.
+      TimesTy tys -> do
+        assert (modality == LinearUnpack) dirs
+          "[check Tuple] tuple modality must be linear unpack for Times"
 
-      -- execState gives back the final state
-      execStateT calc ctx
+        threadedLeftovers vTms tys
 
+      -- make sure each of the branches checks and consumes the same resources
+      WithTy tys -> do
+        assert (modality == LinearProject) dirs
+          "[check Tuple] tuple modality must be linear projection for With"
 
-    -- make sure each of the branches checks and consumes the same resources
-    WithTy tys -> do
-      assert (modality == LinearProject) dirs
-        "[check Tuple] tuple modality must be linear projection for With"
+        allLeftovers <- flip V.imapM vTms $ \i val ->
+          check (Tuple' i:dirs) ctx (tys V.! i) val
+        assert (allTheSame (V.toList allLeftovers)) dirs
+          "[check WithTy] mismatching leftovers"
+        return (V.head allLeftovers)
 
-      allLeftovers <- flip V.imapM vTms $ \i val -> do
-        check (Tuple' i:dirs) ctx (tys V.! i) val
-      assert (allTheSame (V.toList allLeftovers)) dirs
-        "[check WithTy] mismatching leftovers"
-      return (V.head allLeftovers)
+      TupleTy tys -> do
+        assert (modality == Nonlinear) dirs
+          "[check Tuple] tuple modality must be nonlinear for TupleTy"
 
-    _ -> throwStackError dirs
-           "[check Tuple] checking Tuple against non-(TimesTy/WithTy)"
+        threadedLeftovers vTms tys
+
+      _ -> throwStackError dirs
+             "[check Tuple] checking Tuple against non-(TupleTy/TimesTy/WithTy)"
 
   Plus idx val -> case ty of
     PlusTy tys ->
@@ -423,8 +422,9 @@ check dirs ctx ty tm = case tm of
 
   Neu cTm -> do
     (leftovers, cTmTy) <- infer (Neu':dirs) ctx cTm
-    assert (cTmTy == ty) (Neu':dirs)
-      "[check Neu] checking inferred neutral type"
+    assert (cTmTy == ty) (Neu':dirs) $
+      "[check Neu] inferred type of neutral term ( " ++ show cTmTy ++ " ) " ++
+        "does not match expected (checked) type: " ++ show ty
     return leftovers
 
 checkToplevel :: Type -> Value -> Either String Ctx
@@ -483,7 +483,7 @@ evalV env tm = case tm of
   -- TODO(joel) only force / evaluate one field if modality is LinearProject
   Tuple modality vTms -> Tuple modality <$> mapM (evalV env) vTms
   Plus _ _ -> throwError "[evalV Plus] evaluating uneliminated Plus"
-  Let _pat cTm vTm -> do
+  Let cTm vTm -> do
     cTm' <- evalC env cTm
     evalV (cTm':env) vTm
   Primop _ -> pure tm
@@ -512,31 +512,8 @@ openV k x tm = case tm of
   Lam vTm -> Lam (openV (k + 1) x vTm)
   Tuple modality vTms -> Tuple modality (V.map (openV k x) vTms)
   Plus i vTm -> Plus i (openV k x vTm)
-  Let pat cTm vTm ->
-    let bindingSize = patternSize pat
-    in Let pat (openC k x cTm) (openV (k + bindingSize) x vTm)
+  Let cTm vTm -> Let (openC k x cTm) (openV (k + 1) x vTm)
   Index _ -> tm
   Primitive _ -> tm
   Primop _ -> tm
   Neu cTm -> Neu (openC k x cTm)
-
-typePattern :: MonadError String m => Pattern -> Type -> m [(Type, Usage)]
-typePattern (MatchVar usage) ty = pure [(ty, usage)]
--- TODO check these line up (subPats / subTys)
---
--- example:
--- (MatchVar, MatchTuple (MatchVar, MatchVar))
---           v
--- [[ty0], [ty1, ty2]]
-typePattern (MatchTuple subPats) tupleTy = do
-  subTys <- case tupleTy of
-              TimesTy ts -> return ts
-              TupleTy ts -> return ts
-              _ -> throwError "[typePattern] misaligned pattern"
-  let zipped = V.zip subPats subTys
-  twoLevelTypes <- mapM (uncurry typePattern) zipped
-  return (concat twoLevelTypes)
-
-patternSize :: Pattern -> Int
-patternSize (MatchVar _0) = 1
-patternSize (MatchTuple subPats) = sum (V.map patternSize subPats)
