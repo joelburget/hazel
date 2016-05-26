@@ -28,12 +28,14 @@ swap = Lam (Neu $ Unpack (BVar 0, UseOnce)
                          , (TimesTy (V.fromList [natTy, strTy]))))
 
 
--- let (x, y) = \z -> z in (x, y)
+-- unpack (x, y) = \z -> z in (x, y)
 illTyped :: Value
-illTyped = Let
-  (Annot (Lam (bVar 0))
-         (LollyTy (natTy, UseOnce) natTy))
-  (Tuple LinearUnpack (V.fromList [bVar 0, bVar 1]))
+illTyped = Neu $ Unpack
+  ( (Annot (Lam (bVar 0))
+           (LollyTy (natTy, UseOnce) natTy))
+  , UseOnce)
+  ( Tuple LinearUnpack (V.fromList [bVar 1, bVar 0])
+  , (TimesTy (V.fromList [natTy, natTy])))
 
 -- \x -> (x, x)
 diagonal :: Value
