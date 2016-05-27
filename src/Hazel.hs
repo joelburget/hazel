@@ -101,8 +101,8 @@ data Value
 
   -- | Representation for all product types.
   --
-  -- Nonlinear: The familiar tuple you know and love. Use with 'Case' or 'Choose'
-  -- LinearUnpack: 'Times'. Use with 'Case'.
+  -- Nonlinear: The familiar tuple you know and love. Use with 'Unpack' or 'Choose'
+  -- LinearUnpack: 'Times'. Use with 'Unpack'.
   -- LinearProject: 'With'. Use with 'Choose'.
   --
   -- Use with 'Case'.
