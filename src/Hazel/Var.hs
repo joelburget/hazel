@@ -18,8 +18,7 @@ newtype Depth
   deriving (Eq, Show, Enum)
 
 unDepth :: Iso' Depth Word32
-unDepth = iso (\ (Depth d) -> d) Depth
-{-# INLINE unDepth #-}
+unDepth = iso _depth Depth
 
 -- | A binder slot. The second dimension in our 2D de Bruijn scheme.
 newtype Slot
@@ -27,8 +26,7 @@ newtype Slot
   deriving (Eq, Show)
 
 unSlot :: Iso' Slot Word32
-unSlot = iso (\ (Slot s) -> s) Slot
-{-# INLINE unSlot #-}
+unSlot = iso _slot Slot
 
 -- | A 2-dimensional locally-nameless variable.
 data Variable
@@ -40,14 +38,11 @@ data Variable
 boundDepth :: Traversal' Variable Depth
 boundDepth f (B depth slot) = fmap (\ depth' -> B depth' slot) (f depth)
 boundDepth _ (F name) = pure (F name)
-{-# INLINE boundDepth #-}
 
 boundSlot :: Traversal' Variable Slot
 boundSlot f (B depth slot) = fmap (\ slot' -> B depth slot') (f slot)
 boundSlot _ (F name) = pure (F name)
-{-# INLINE boundSlot #-}
 
 freeName :: Traversal' Variable T.Text
 freeName _ (B depth slot) = pure (B depth slot)
-freeName f (F name) = fmap (\ name' -> F name') (f name)
-{-# INLINE freeName #-}
+freeName f (F name) = fmap F (f name)
