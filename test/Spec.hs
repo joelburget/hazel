@@ -4,9 +4,10 @@ import qualified Data.Vector as V
 import Test.Hspec
 
 import Hazel
+import Hazel.Var
 
-bVar :: Int -> Value
-bVar = Neu . BVar
+bVar :: Int -> Int -> Value
+bVar d s = Neu . Var $ B (Depth $ fromIntegral d) (Slot $ fromIntegral s)
 
 natTy, strTy, boolTy :: Type
 natTy = PrimTy NatTy
@@ -21,25 +22,23 @@ nat = Primitive . Nat
 
 -- \(x, y) -> (y, x)
 swap :: Value
-swap = Lam (Neu $ Unpack (BVar 0, UseOnce)
-                         -- most recently bound (0, right side of tuple),
-                         -- followed by previously bound (1, left side of tuple)
-                         ( Tuple LinearUnpack (V.fromList [bVar 0, bVar 1])
+swap = Lam (Neu $ Unpack (Var $ B (Depth 0) (Slot 0), UseOnce)
+                         ( Tuple LinearUnpack (V.fromList [bVar 0 1, bVar 0 0])
                          , (TimesTy (V.fromList [natTy, strTy]))))
 
 
 -- unpack (x, y) = \z -> z in (x, y)
 illTyped :: Value
 illTyped = Neu $ Unpack
-  ( (Annot (Lam (bVar 0))
+  ( (Annot (Lam (bVar 0 0))
            (LollyTy (natTy, UseOnce) natTy))
   , UseOnce)
-  ( Tuple LinearUnpack (V.fromList [bVar 1, bVar 0])
+  ( Tuple LinearUnpack (V.fromList [bVar 0 0, bVar 0 1])
   , (TimesTy (V.fromList [natTy, natTy])))
 
 -- \x -> (x, x)
 diagonal :: Value
-diagonal = Lam (Tuple LinearUnpack (V.fromList [bVar 0, bVar 0]))
+diagonal = Lam (Tuple LinearUnpack (V.fromList [bVar 0 0, bVar 0 0]))
 
 caseExample :: Computation
 caseExample = Case
@@ -57,8 +56,8 @@ primopExample =
   in App (Annot (Primop ConcatString) (inferPrimop ConcatString))
          (pair (StrV "abc") (StrV "xyz"))
 
--- > case (0, "string") of
---     (x, y) -> (printNat x, toUpper y)
+-- > unpack (x, y) = (0, "string")
+--   in (printNat x, toUpper y)
 -- ("0", "STRING")
 timesExample :: Computation
 timesExample =
@@ -67,11 +66,11 @@ timesExample =
       f = Tuple LinearUnpack (V.fromList
         [ Neu (App
             (Annot (Primop PrintNat) (inferPrimop PrintNat))
-            (bVar 1)
+            (bVar 0 0)
           )
         , Neu (App
             (Annot (Primop ToUpper) (inferPrimop ToUpper))
-            (bVar 0)
+            (bVar 0 1)
           )
         ])
   in Unpack (Annot tuple tupleTy, UseOnce) (f, natTy)
@@ -87,11 +86,11 @@ plusExample =
   let branches = V.fromList
         [ Neu (App
             (Annot (Primop ConcatString) (inferPrimop ConcatString))
-            (Tuple LinearUnpack (V.fromList [bVar 0, str "bar"]))
+            (Tuple LinearUnpack (V.fromList [bVar 0 0, str "bar"]))
           )
         , Neu (App
             (Annot (Primop ToUpper) (inferPrimop ToUpper))
-            (bVar 0)
+            (bVar 0 0)
           )
         ]
   in Case (Annot (Index 0) boolTy) strTy branches
@@ -108,7 +107,7 @@ main = hspec $ do
     let diagonalTy =
           let x = PrimTy StringTy
           in LollyTy (x, UseOnce) (TimesTy (V.fromList [x, x]))
-        expected = "Lam'\nTuple' 1\nNeu'\nBVar'\n\n[useVar] used exhausted variable"
+        expected = "Lam'\nTuple' 1\nNeu'\nVar'\n\n[useVar] used exhausted variable"
         checker = checkToplevel diagonalTy diagonal
     it "doesn't Check" $ runChecker checker `shouldBe` expected
 
@@ -134,7 +133,7 @@ main = hspec $ do
     it "evaluates" $ evalC [] timesExample `shouldBe` expected
 
   describe "plus" $ do
-    let checker = check [] [(strTy, UseOnce)] strTy (Neu plusExample)
+    let checker = check [] [V.singleton (strTy, UseOnce)] strTy (Neu plusExample)
         expected = Right (str "foobar")
     it "checks" $ runChecker checker `shouldBe` "success!"
-    it "evaluates" $ evalC [str "foo"] plusExample `shouldBe` expected
+    it "evaluates" $ evalC [V.singleton $ str "foo"] plusExample `shouldBe` expected

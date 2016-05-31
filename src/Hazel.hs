@@ -1,7 +1,9 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Hazel where
 
@@ -27,20 +29,22 @@ module Hazel where
 -- * threading contexts specifies calling convention in a very real way
 -- * what data structures are we using (list vs vector / ralist)
 
+import Hazel.Var
+
 import Control.Lens hiding (Const)
 import Control.Monad.Error.Class
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Char (toUpper, toLower)
-import Data.Foldable (foldl')
 import Data.Vector (Vector)
+
 import qualified Data.Vector as V
+import qualified Data.Text as T
 
 
 -- inferred terms / eliminations / neutral terms
 data Computation
-  = BVar Int
-  | FVar String
+  = Var Variable
   | App Computation Value
 
   -- Type annotations mark the places where computation is still to be done, or
@@ -97,8 +101,8 @@ data Value
 
   -- | Representation for all product types.
   --
-  -- Nonlinear: The familiar tuple you know and love. Use with 'Case' or 'Choose'
-  -- LinearUnpack: 'Times'. Use with 'Case'.
+  -- Nonlinear: The familiar tuple you know and love. Use with 'Unpack' or 'Choose'
+  -- LinearUnpack: 'Times'. Use with 'Unpack'.
   -- LinearProject: 'With'. Use with 'Choose'.
   --
   -- Use with 'Case'.
@@ -114,8 +118,7 @@ data Value
 
 data Deriv
   -- computation
-  = BVar'
-  | FVar'
+  = Var'
   | App1
   | App2
   | CaseArg
@@ -180,6 +183,8 @@ data Type
 data Usage = Inexhaustible | UseOnce | Exhausted
   deriving (Eq, Show)
 
+-- TODO(joel): strawman for a better api for variable use: pass in the index of
+-- the var you want to access, get back the new context.
 useVar :: MonadError String m => LocationDirections -> Usage -> m Usage
 useVar _ Inexhaustible = pure Inexhaustible
 useVar _ UseOnce = pure Exhausted
@@ -197,9 +202,10 @@ type LocationDirections = [Deriv]
 --
 -- Unlike in "Typing with Leftovers" we bundle typing and usage together in the
 -- same data structure. This list is de-bruijn indexed, so to get the type and
--- usage of `BVar i` we access `ctx !! i`.
+-- usage of `Var (B (Depth d) (Slot s))` we access
+-- `(ctx !! (fromEnum i)) V.! (fromEnum s)`.
 -- TODO: extract type/pretype distinction
-type Ctx = [(Type, Usage)]
+type Ctx = [V.Vector (Type, Usage)]
 
 -- I (Joel) made the explicit choice to not use the state monad to track
 -- leftovers, since I want to take a little more care with tracking linearity.
@@ -218,13 +224,14 @@ assert :: MonadError String m => Bool -> LocationDirections -> String -> m ()
 assert True _ _ = return ()
 assert False dirs str = throwStackError dirs str
 
-inferVar :: LocationDirections -> Ctx -> Int -> Either String (Ctx, Type)
-inferVar dirs ctx k = do
+inferVar :: LocationDirections -> Ctx -> Variable -> Either String (Ctx, Type)
+inferVar dirs ctx (B (Depth depth) (Slot slot)) = do
   -- find the type, count this as a usage
-  let (ty, usage) = ctx !! k
+  let (ty, usage) = (ctx !! fromEnum depth) V.! fromEnum slot
   usage' <- useVar dirs usage
-  -- TODO(joel) this is the only line that uses lens -- remove it?
-  return (ctx & ix k . _2 .~ usage', ty)
+  return (ctx & ix (fromEnum depth) . ix (fromEnum slot) . _2 .~ usage', ty)
+inferVar dirs _ (F name) = throwStackError (Var':dirs) $
+  "[infer Var] found unexpected free variable: " ++ T.unpack name
 
 -- Type inference for primops is entirely non-dependent on the environment.
 -- TODO(bts): add support for non-linear primops
@@ -252,15 +259,9 @@ throwStackError dirs str =
   let stackStr = unlines (map show (reverse dirs))
   in throwError $ stackStr ++ "\n" ++ str
 
-reverseConcat :: Foldable t => t a -> [a] -> [a]
-xs `reverseConcat` ys = foldl' (flip (:)) ys xs
-
 infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
 infer dirs ctx t = case t of
-  BVar i -> inferVar (BVar':dirs) ctx i
-
-  FVar _name -> throwStackError (FVar':dirs)
-    "[infer FVar] found unexpected free variable"
+  Var var -> inferVar (Var':dirs) ctx var
 
   App cTm vTm -> do
     (leftovers, cTmTy) <- infer (App1:dirs) ctx cTm
@@ -300,13 +301,10 @@ infer dirs ctx t = case t of
 
     case cTmTy of
       WithTy tys -> do
-        assert (idx < V.length tys) (ChooseArg:dirs)
-          "[infer Choose] index mismatch"
-        let usage = snd (head ctx)
-        -- TODO(joel) better api for variable use: strawman: pass in the index
-        -- of the var you want to access, get back the new context.
-        usage' <- useVar (ChooseArg:dirs) usage
-        return (leftovers & _head . _2 .~ usage', tys V.! idx)
+        assert (idx < V.length tys) (ChooseArg:dirs) $
+          "[infer Choose] index " ++ show idx ++ " out of bounds"
+        return (leftovers, tys V.! idx)
+
       _ -> throwStackError (ChooseArg:dirs)
         "[infer Choose] can't access non-With"
 
@@ -317,7 +315,7 @@ infer dirs ctx t = case t of
                 TimesTy tupTys -> return tupTys
                 _ -> throwStackError (Unpack':dirs) $
                   "[infer Unpack] can't unpack a non-times/tuple: " ++ show cTmTy
-    let newCtx = ((,usage) <$> tupTys) `reverseConcat` leftovers
+    let newCtx = ((,usage) <$> tupTys) : leftovers
     leftovers' <- check (Unpack':dirs) newCtx ty vTm
     return (leftovers', ty)
 
@@ -329,8 +327,8 @@ check :: LocationDirections -> Ctx -> Type -> Value -> Either String Ctx
 check dirs ctx ty tm = case tm of
   Lam body -> case ty of
     LollyTy (argTy, usage) tau -> do
-      let bodyCtx = (argTy, usage):ctx
-      (_, usage'):leftovers <- check (Lam':dirs) bodyCtx tau body
+      let bodyCtx = (V.singleton (argTy, usage)):ctx
+      (V.head -> (_, usage')):leftovers <- check (Lam':dirs) bodyCtx tau body
       assert (usage' /= UseOnce) (Lam':dirs)
         "[check Lam] must consume linear bound variable"
       return leftovers
@@ -348,8 +346,8 @@ check dirs ctx ty tm = case tm of
     -- FIXME: the real usage should flow from inference, whereas we currently
     -- only have the pretype:
     let fakeIncorrectUsage = UseOnce
-        bodyCtx = (rhsTy, fakeIncorrectUsage):leftovers
-    ((_, usedRhs):leftovers2) <- check (Let2:dirs) bodyCtx ty vTm
+        bodyCtx = (V.singleton (rhsTy, fakeIncorrectUsage)):leftovers
+    (V.head -> (_, usedRhs)):leftovers2 <- check (Let2:dirs) bodyCtx ty vTm
     assert (usedRhs /= UseOnce) dirs
       "[check Let] must consume linear bound variables"
     return leftovers2
@@ -430,15 +428,22 @@ check dirs ctx ty tm = case tm of
 checkToplevel :: Type -> Value -> Either String Ctx
 checkToplevel = check [] []
 
-evalC :: [Value] -> Computation -> Either String Value
+atVar :: Variable -> Traversal' [V.Vector a] a
+atVar (B (Depth d) (Slot s)) = ix (fromEnum d) . ix (fromEnum s)
+atVar (F _) = ix (-1) . ix (-1) -- XXX(bts): hack
+
+evalC :: [V.Vector Value] -> Computation -> Either String Value
 evalC env tm = case tm of
-  BVar i -> pure (env !! i)
-  FVar name -> throwError ("unexpected free var in evaluation: " ++ name)
+  Var var@(B _ _) -> maybe (throwError "var references non-existent slot")
+                           return
+                           (env ^? atVar var)
+  Var (F name) -> throwError $
+    "unexpected free var in evaluation: " ++ T.unpack name
   App cTm vTm -> do
     cTm' <- evalC env cTm
     vTm' <- evalV env vTm
     case cTm' of
-      Lam cBody -> evalV (vTm':env) cBody
+      Lam cBody -> evalV (V.singleton vTm':env) cBody
       -- Note that we're passing in only the current heap value, not the
       -- context, since a primop must be atomic -- it can't capture
       Primop p -> evalPrimop p vTm'
@@ -462,7 +467,7 @@ evalC env tm = case tm of
   Unpack (cTm, _usage) (vTm, _ty) -> do
     cTm' <- evalC env cTm
     case cTm' of
-      Tuple _ tupTms -> evalV (tupTms `reverseConcat` env) vTm
+      Tuple _ tupTms -> evalV (tupTms : env) vTm
       _ -> throwError $ "[evalC Unpack] can't unpack non-tuple: " ++ show cTm'
   Annot vTm _ty -> evalV env vTm
 
@@ -478,14 +483,14 @@ evalPrimop ToUpper (StrV s) = pure (StrV (map toUpper s))
 evalPrimop ToLower (StrV s) = pure (StrV (map toLower s))
 evalPrimop x y = throwError ("unexpected arguments to evalPrimop: " ++ show (x, y))
 
-evalV :: [Value] -> Value -> Either String Value
+evalV :: [V.Vector Value] -> Value -> Either String Value
 evalV env tm = case tm of
   -- TODO(joel) only force / evaluate one field if modality is LinearProject
   Tuple modality vTms -> Tuple modality <$> mapM (evalV env) vTms
   Plus _ _ -> throwError "[evalV Plus] evaluating uneliminated Plus"
   Let cTm vTm -> do
     cTm' <- evalC env cTm
-    evalV (cTm':env) vTm
+    evalV (V.singleton cTm':env) vTm
   Primop _ -> pure tm
   Lam _ -> pure tm
   Primitive _ -> pure tm
@@ -494,25 +499,26 @@ evalV env tm = case tm of
 
 -- TODO we don't actually use the implementation of opening -- I had just
 -- pre-emptively defined it thinking it would be used.
-openC :: Int -> String -> Computation -> Computation
-openC k x tm = case tm of
-  BVar i -> if i == k then FVar x else tm
-  FVar _ -> tm
-  App cTm vTm -> App (openC k x cTm) (openV k x vTm)
+openC :: Depth -> V.Vector T.Text -> Computation -> Computation
+openC k names tm = case tm of
+  Var (B i (Slot idx)) -> if i == k
+                          then Var (F $ names V.! fromIntegral idx)
+                          else tm
+  Var (F _) -> tm
+  App cTm vTm -> App (openC k names cTm) (openV k names vTm)
   Case cTm ty vTms ->
-    Case (openC k x cTm) ty (V.map (openV k x) vTms)
-  Choose cTm i -> Choose (openC k x cTm) i
+    Case (openC k names cTm) ty (V.map (openV k names) vTms)
+  Choose cTm i -> Choose (openC k names cTm) i
   Unpack (cTm, usage) (vTm, ty) ->
-    let tupWidth = error "TODO: possibly switch to 2D debruijn?"
-    in Unpack ((openC k x cTm), usage) (openV (k + tupWidth) x vTm, ty)
-  Annot vTm ty -> Annot (openV k x vTm) ty
+    Unpack ((openC k names cTm), usage) (openV (succ k) names vTm, ty)
+  Annot vTm ty -> Annot (openV k names vTm) ty
 
-openV :: Int -> String -> Value -> Value
+openV :: Depth -> V.Vector T.Text -> Value -> Value
 openV k x tm = case tm of
-  Lam vTm -> Lam (openV (k + 1) x vTm)
+  Lam vTm -> Lam (openV (succ k) x vTm)
   Tuple modality vTms -> Tuple modality (V.map (openV k x) vTms)
   Plus i vTm -> Plus i (openV k x vTm)
-  Let cTm vTm -> Let (openC k x cTm) (openV (k + 1) x vTm)
+  Let cTm vTm -> Let (openC k x cTm) (openV (succ k) x vTm)
   Index _ -> tm
   Primitive _ -> tm
   Primop _ -> tm
