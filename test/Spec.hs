@@ -56,8 +56,8 @@ primopExample =
   in App (Annot (Primop ConcatString) (inferPrimop ConcatString))
          (pair (StrV "abc") (StrV "xyz"))
 
--- > unpack (0, "string") of
---     (x, y) -> (printNat x, toUpper y)
+-- > unpack (x, y) = (0, "string")
+--   in (printNat x, toUpper y)
 -- ("0", "STRING")
 timesExample :: Computation
 timesExample =
