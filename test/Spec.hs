@@ -9,7 +9,7 @@ import Hazel.Var
 bVar :: Int -> Int -> Value
 bVar d s = Neu . Var $ B (Depth $ fromIntegral d) (Slot $ fromIntegral s)
 
-natTy, strTy, boolTy :: Type
+natTy, strTy, boolTy :: PreType
 natTy = PrimTy NatTy
 strTy = PrimTy StringTy
 boolTy = IndexTy 2
@@ -22,7 +22,7 @@ nat = Primitive . Nat
 
 -- \(x, y) -> (y, x)
 swap :: Value
-swap = Lam (Neu $ Unpack (Var $ B (Depth 0) (Slot 0), UseOnce)
+swap = Lam (Neu $ Unpack (Var $ B (Depth 0) (Slot 0))
                          ( Tuple LinearUnpack (V.fromList [bVar 0 1, bVar 0 0])
                          , (TimesTy (V.fromList [natTy, strTy]))))
 
@@ -30,9 +30,8 @@ swap = Lam (Neu $ Unpack (Var $ B (Depth 0) (Slot 0), UseOnce)
 -- unpack (x, y) = \z -> z in (x, y)
 illTyped :: Value
 illTyped = Neu $ Unpack
-  ( (Annot (Lam (bVar 0 0))
-           (LollyTy (natTy, UseOnce) natTy))
-  , UseOnce)
+  (Annot (Lam (bVar 0 0))
+           (LollyTy (natTy, Linear) natTy))
   ( Tuple LinearUnpack (V.fromList [bVar 0 0, bVar 0 1])
   , (TimesTy (V.fromList [natTy, natTy])))
 
@@ -73,7 +72,7 @@ timesExample =
             (bVar 0 1)
           )
         ])
-  in Unpack (Annot tuple tupleTy, UseOnce) (f, natTy)
+  in Unpack (Annot tuple tupleTy) (f, natTy)
 
 -- > let x = "foo" in case False of
 --     False -> concatString x "bar"
@@ -99,14 +98,14 @@ main :: IO ()
 main = hspec $ do
   describe "swap" $ do
     let swapTy = LollyTy
-          (TimesTy (V.fromList [strTy, natTy]), UseOnce)
+          (TimesTy (V.fromList [strTy, natTy]), Linear)
           (TimesTy (V.fromList [natTy, strTy]))
     it "checks" $ runChecker (checkToplevel swapTy swap) `shouldBe` "success!"
 
   describe "diagonal" $ do
     let diagonalTy =
           let x = PrimTy StringTy
-          in LollyTy (x, UseOnce) (TimesTy (V.fromList [x, x]))
+          in LollyTy (x, Linear) (TimesTy (V.fromList [x, x]))
         expected = "Lam'\nTuple' 1\nNeu'\nVar'\n\n[useVar] used exhausted variable"
         checker = checkToplevel diagonalTy diagonal
     it "doesn't Check" $ runChecker checker `shouldBe` expected
@@ -133,7 +132,7 @@ main = hspec $ do
     it "evaluates" $ evalC [] timesExample `shouldBe` expected
 
   describe "plus" $ do
-    let checker = check [] [V.singleton (strTy, UseOnce)] strTy (Neu plusExample)
+    let checker = check [] [V.singleton (Type strTy One)] strTy (Neu plusExample)
         expected = Right (str "foobar")
     it "checks" $ runChecker checker `shouldBe` "success!"
     it "evaluates" $ evalC [V.singleton $ str "foo"] plusExample `shouldBe` expected

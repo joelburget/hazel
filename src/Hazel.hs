@@ -49,7 +49,7 @@ data Computation
 
   -- Type annotations mark the places where computation is still to be done, or
   -- the "cuts". - I Got Plenty o' Nuttin'
-  | Annot Value Type
+  | Annot Value PreType
 
   -- see below for connective eliminators
 
@@ -64,17 +64,16 @@ data Computation
   -- Introduction form: `Tuple Nonlinear` or `Tuple LinearUnpack`.
   | Case Computation     -- ^ expression
          -- TODO(bts): figure out how we can eventually get rid of this type
-         Type            -- ^ type of the case expr
+         PreType         -- ^ type of the case expr
          (Vector Value)  -- ^ expressions for each index
 
   | Choose
       Computation -- expression
       Int         -- index of field to access
 
-  | Unpack (Computation, Usage) -- TODO(bts): with full type (vs only pretype)
-                                -- inference, does this Usage go away?
-           (Value, Type)        -- TODO(bts): figure out how to eventually
-                                -- remove this Type
+  | Unpack Computation
+           (Value, PreType)        -- TODO(bts): figure out how to eventually
+                                   -- remove this Type
 
   -- XXX(joel) this shouldn't be an instance of Eq -- I just made it so we
   -- could use == in the test spec
@@ -94,7 +93,7 @@ data TupleModality
 data Value
   = Lam Value
   | Primop Primop
-  | Let Computation Value
+  | Let UsageDeclaration Computation Value
   | Index Int
   | Primitive Primitive
   | Neu Computation
@@ -119,8 +118,8 @@ data Value
 data Deriv
   -- computation
   = Var'
+  | App0
   | App1
-  | App2
   | CaseArg
   | CaseBranch Int
   | ChooseArg
@@ -166,29 +165,61 @@ data PrimTy
   | NatTy
   deriving (Eq, Show)
 
-data Type
+-- | 'PreType' is a 'Type' without a usage annotation.
+data PreType
   = PrimTy PrimTy
-  -- | Type of a bounded index.
+  -- | PreType of a bounded index.
   --
   -- `IndexTy 2` is the type of `Index 0` and `Index 1`. This type is analogous
   -- to `Fin` in that it describes bounded nats.
   | IndexTy Int
-  | LollyTy (Type, Usage) Type -- TODO(bts): probably remove Usage here
-  | TupleTy (Vector Type)
-  | TimesTy (Vector Type)
-  | WithTy (Vector Type)
-  | PlusTy (Vector Type)
+  | LollyTy (PreType, UsageDeclaration) PreType
+  | TupleTy (Vector PreType)
+  | TimesTy (Vector PreType)
+  | WithTy (Vector PreType)
+  | PlusTy (Vector PreType)
   deriving (Eq, Show)
 
-data Usage = Inexhaustible | UseOnce | Exhausted
+-- | 'Type' is a usage aware 'PreType'.
+data Type = Type
+  { _preType :: PreType
+  , _usage :: UsagesRemaining
+  } deriving (Eq, Show)
+
+-- | 'Type' / '_preType' lens
+preType :: Functor f => (PreType -> f PreType) -> Type -> f Type
+preType f (Type p u) = flip Type u <$> f p
+
+-- | 'Type' / '_usage' lens
+usage :: Functor f => (UsagesRemaining -> f UsagesRemaining) -> Type -> f Type
+usage f (Type p u) = Type p <$> f u
+
+data UsageDeclaration
+  = Irrelevant
+  | Linear
+  | Inexhaustible
+  deriving (Eq, Show)
+
+data UsagesRemaining
+  = None
+  | One
+  | Infinite
   deriving (Eq, Show)
 
 -- TODO(joel): strawman for a better api for variable use: pass in the index of
 -- the var you want to access, get back the new context.
-useVar :: MonadError String m => LocationDirections -> Usage -> m Usage
-useVar _ Inexhaustible = pure Inexhaustible
-useVar _ UseOnce = pure Exhausted
-useVar dirs Exhausted = throwStackError dirs "[useVar] used exhausted variable"
+useVar :: MonadError String m
+       => LocationDirections
+       -> UsagesRemaining
+       -> m UsagesRemaining
+useVar _ Infinite = pure Infinite
+useVar _ One = pure None
+useVar dirs None = throwStackError dirs "[useVar] used exhausted variable"
+
+remainingFromDeclaration :: UsageDeclaration -> UsagesRemaining
+remainingFromDeclaration Irrelevant = None
+remainingFromDeclaration Linear = One
+remainingFromDeclaration Inexhaustible = Infinite
 
 -- | Directions pointing to a location in the syntax tree.
 --
@@ -204,8 +235,7 @@ type LocationDirections = [Deriv]
 -- same data structure. This list is de-bruijn indexed, so to get the type and
 -- usage of `Var (B (Depth d) (Slot s))` we access
 -- `(ctx !! (fromEnum i)) V.! (fromEnum s)`.
--- TODO: extract type/pretype distinction
-type Ctx = [V.Vector (Type, Usage)]
+type CheckingCtx = [V.Vector Type]
 
 -- I (Joel) made the explicit choice to not use the state monad to track
 -- leftovers, since I want to take a little more care with tracking linearity.
@@ -217,40 +247,44 @@ type Ctx = [V.Vector (Type, Usage)]
 --
 -- TODO do we need to check all linear variables have been consumed here?
 -- * we should just fix this so it passes in the empty context to the checker
-runChecker :: Either String Ctx -> String
+runChecker :: Either String CheckingCtx -> String
 runChecker = either id (const "success!")
 
 assert :: MonadError String m => Bool -> LocationDirections -> String -> m ()
 assert True _ _ = return ()
 assert False dirs str = throwStackError dirs str
 
-inferVar :: LocationDirections -> Ctx -> Variable -> Either String (Ctx, Type)
+-- | Infer the type of a variable and mark it used.
+inferVar :: LocationDirections
+         -> CheckingCtx
+         -> Variable
+         -> Either String (CheckingCtx, PreType)
 inferVar dirs ctx (B (Depth depth) (Slot slot)) = do
   -- find the type, count this as a usage
-  let (ty, usage) = (ctx !! fromEnum depth) V.! fromEnum slot
-  usage' <- useVar dirs usage
-  return (ctx & ix (fromEnum depth) . ix (fromEnum slot) . _2 .~ usage', ty)
+  let Type preTy use = (ctx !! fromEnum depth) V.! fromEnum slot
+  use' <- useVar dirs use
+  return (ctx & ix (fromEnum depth) . ix (fromEnum slot) . usage .~ use', preTy)
 inferVar dirs _ (F name) = throwStackError (Var':dirs) $
   "[infer Var] found unexpected free variable: " ++ T.unpack name
 
 -- Type inference for primops is entirely non-dependent on the environment.
 -- TODO(bts): add support for non-linear primops
-inferPrimop :: Primop -> Type
+inferPrimop :: Primop -> PreType
 inferPrimop p =
   let nat = PrimTy NatTy
       str = PrimTy StringTy
-      tuple = TimesTy . V.fromList
+      tuple lst = TimesTy (V.fromList lst)
   in case p of
-       Add -> LollyTy (tuple [nat, nat], UseOnce) nat
-       PrintNat -> LollyTy (nat, UseOnce) str
-       ConcatString -> LollyTy (tuple [str, str], UseOnce) str
-       ToUpper -> LollyTy (str, UseOnce) str
-       ToLower -> LollyTy (str, UseOnce) str
+        Add -> LollyTy (tuple [nat, nat], Linear) nat
+        PrintNat -> LollyTy (nat, Linear) str
+        ConcatString -> LollyTy (tuple [str, str], Linear) str
+        ToUpper -> LollyTy (str, Linear) str
+        ToLower -> LollyTy (str, Linear) str
 
 
 allTheSame :: (Eq a) => [a] -> Bool
 allTheSame [] = True
-allTheSame (x:xs) = and $ map (== x) xs
+allTheSame (x:xs) = all (== x) xs
 
 throwStackError :: MonadError String m => LocationDirections -> String -> m a
 throwStackError dirs str =
@@ -259,21 +293,24 @@ throwStackError dirs str =
   let stackStr = unlines (map show (reverse dirs))
   in throwError $ stackStr ++ "\n" ++ str
 
-infer :: LocationDirections -> Ctx -> Computation -> Either String (Ctx, Type)
+infer :: LocationDirections
+      -> CheckingCtx
+      -> Computation
+      -> Either String (CheckingCtx, PreType)
 infer dirs ctx t = case t of
   Var var -> inferVar (Var':dirs) ctx var
 
   App cTm vTm -> do
-    (leftovers, cTmTy) <- infer (App1:dirs) ctx cTm
+    (leftovers, cTmTy) <- infer (App0:dirs) ctx cTm
     case cTmTy of
-      -- XXX(joel) figure out this usage
-      LollyTy (inTy, inUsage) outTy -> do
-        leftovers2 <- check (App2:dirs) leftovers inTy vTm
+      LollyTy (preTy, usages) outTy -> do
+        -- XXX(joel) we should be checking this usage, but how?
+        leftovers2 <- check (App1:dirs) leftovers preTy vTm
         return (leftovers2, outTy)
-      _ -> throwStackError (App1:dirs)
+      _ -> throwStackError (App0:dirs)
         "[infer App] inferred non LollyTy in LHS of application"
 
-  Case cTm ty vTms -> do
+  Case cTm preTy vTms -> do
     (leftovers, cTmTy) <- infer (CaseArg:dirs) ctx cTm
 
     -- TEMP(joel): right now we only case on indices -- generalize so we can
@@ -288,13 +325,14 @@ infer dirs ctx t = case t of
       _ -> throwStackError (CaseArg:dirs)
         "[infer Case] can't case on non-indices"
 
-    branchCtxs <- imapM (\i vTm -> check (CaseBranch i:dirs) leftovers ty vTm)
-                        vTms
+    branchCtxs <- imapM
+      (\i vTm -> check (CaseBranch i:dirs) leftovers preTy vTm)
+      vTms
 
     assert (allTheSame (V.toList branchCtxs)) dirs
       "[infer Case] all branches must consume the same linear variables"
 
-    return (V.head branchCtxs, ty)
+    return (V.head branchCtxs, preTy)
 
   Choose cTm idx -> do
     (leftovers, cTmTy) <- infer (ChooseArg:dirs) ctx cTm
@@ -304,32 +342,37 @@ infer dirs ctx t = case t of
         assert (idx < V.length tys) (ChooseArg:dirs) $
           "[infer Choose] index " ++ show idx ++ " out of bounds"
         return (leftovers, tys V.! idx)
-
       _ -> throwStackError (ChooseArg:dirs)
         "[infer Choose] can't access non-With"
 
-  Unpack (cTm, usage) (vTm, ty) -> do
-    (leftovers, cTmTy) <- infer (Unpack':dirs) ctx cTm
-    tupTys <- case cTmTy of
-                TupleTy tupTys -> return tupTys
-                TimesTy tupTys -> return tupTys
+  Unpack cTm (vTm, preTy) -> do
+    (leftovers, cTmPreTy) <- infer (Unpack':dirs) ctx cTm
+    tupTys <- case cTmPreTy of
+                TupleTy tupTys -> return (V.map (flip Type Infinite) tupTys)
+                TimesTy tupTys -> return (V.map (flip Type One) tupTys)
                 _ -> throwStackError (Unpack':dirs) $
-                  "[infer Unpack] can't unpack a non-times/tuple: " ++ show cTmTy
-    let newCtx = ((,usage) <$> tupTys) : leftovers
-    leftovers' <- check (Unpack':dirs) newCtx ty vTm
-    return (leftovers', ty)
+                  "[infer Unpack] can't unpack a non-times/tuple: " ++
+                  show cTmPreTy
+    let newCtx = tupTys:leftovers
+    leftovers' <- check (Unpack':dirs) newCtx preTy vTm
+    return (leftovers', preTy)
 
   Annot vTm ty -> do
     leftovers <- check (Annot':dirs) ctx ty vTm
     return (leftovers, ty)
 
-check :: LocationDirections -> Ctx -> Type -> Value -> Either String Ctx
+check :: LocationDirections
+      -> CheckingCtx
+      -> PreType
+      -> Value
+      -> Either String CheckingCtx
 check dirs ctx ty tm = case tm of
   Lam body -> case ty of
-    LollyTy (argTy, usage) tau -> do
-      let bodyCtx = (V.singleton (argTy, usage)):ctx
-      (V.head -> (_, usage')):leftovers <- check (Lam':dirs) bodyCtx tau body
-      assert (usage' /= UseOnce) (Lam':dirs)
+    LollyTy (domPreTy, domUsage) tau -> do
+      let varTy = Type domPreTy (remainingFromDeclaration domUsage)
+          bodyCtx = V.singleton varTy:ctx
+      (V.head -> Type _ use'):leftovers <- check (Lam':dirs) bodyCtx tau body
+      assert (use' /= One) (Lam':dirs)
         "[check Lam] must consume linear bound variable"
       return leftovers
     _ -> throwStackError (Lam':dirs)
@@ -341,14 +384,13 @@ check dirs ctx ty tm = case tm of
       "[check Primop] primop (" ++ show p ++ ") type mismatch"
     return ctx
 
-  Let rhsTm vTm -> do
-    (leftovers, rhsTy) <- infer (Let1:dirs) ctx rhsTm
-    -- FIXME: the real usage should flow from inference, whereas we currently
-    -- only have the pretype:
-    let fakeIncorrectUsage = UseOnce
-        bodyCtx = (V.singleton (rhsTy, fakeIncorrectUsage)):leftovers
-    (V.head -> (_, usedRhs)):leftovers2 <- check (Let2:dirs) bodyCtx ty vTm
-    assert (usedRhs /= UseOnce) dirs
+  Let usageDecl rhsTm vTm -> do
+    (leftovers, rhsPreTy) <- infer (Let1:dirs) ctx rhsTm
+    let remaining = remainingFromDeclaration usageDecl
+        varTy = Type rhsPreTy remaining
+        bodyCtx = V.singleton varTy:leftovers
+    (V.head -> Type _ usedRhs):leftovers2 <- check (Let2:dirs) bodyCtx ty vTm
+    assert (usedRhs /= One) dirs
       "[check Let] must consume linear bound variables"
     return leftovers2
 
@@ -358,7 +400,7 @@ check dirs ctx ty tm = case tm of
     let threadedLeftovers tms tys =
           let calc = V.imapM
                 (\i (tm', ty') -> do
-                  let dirs' = (Tuple' i):dirs
+                  let dirs' = Tuple' i:dirs
                   leftovers <- get
                   newLeftovers <- lift $ check dirs' leftovers ty' tm'
                   put newLeftovers
@@ -425,7 +467,7 @@ check dirs ctx ty tm = case tm of
         "does not match expected (checked) type: " ++ show ty
     return leftovers
 
-checkToplevel :: Type -> Value -> Either String Ctx
+checkToplevel :: PreType -> Value -> Either String CheckingCtx
 checkToplevel = check [] []
 
 atVar :: Variable -> Traversal' [V.Vector a] a
@@ -464,7 +506,7 @@ evalC env tm = case tm of
         let vTm = valueVec V.! idx
         evalV env vTm
       _ -> throwError "[evalC Choose] field not found"
-  Unpack (cTm, _usage) (vTm, _ty) -> do
+  Unpack cTm (vTm, _ty) -> do
     cTm' <- evalC env cTm
     case cTm' of
       Tuple _ tupTms -> evalV (tupTms : env) vTm
@@ -481,14 +523,15 @@ evalPrimop ConcatString (Tuple _modality args)
   = pure (StrV (l ++ r))
 evalPrimop ToUpper (StrV s) = pure (StrV (map toUpper s))
 evalPrimop ToLower (StrV s) = pure (StrV (map toLower s))
-evalPrimop x y = throwError ("unexpected arguments to evalPrimop: " ++ show (x, y))
+evalPrimop x y = throwError
+  ("unexpected arguments to evalPrimop: " ++ show (x, y))
 
 evalV :: [V.Vector Value] -> Value -> Either String Value
 evalV env tm = case tm of
   -- TODO(joel) only force / evaluate one field if modality is LinearProject
   Tuple modality vTms -> Tuple modality <$> mapM (evalV env) vTms
   Plus _ _ -> throwError "[evalV Plus] evaluating uneliminated Plus"
-  Let cTm vTm -> do
+  Let _usage cTm vTm -> do
     cTm' <- evalC env cTm
     evalV (V.singleton cTm':env) vTm
   Primop _ -> pure tm
@@ -509,8 +552,8 @@ openC k names tm = case tm of
   Case cTm ty vTms ->
     Case (openC k names cTm) ty (V.map (openV k names) vTms)
   Choose cTm i -> Choose (openC k names cTm) i
-  Unpack (cTm, usage) (vTm, ty) ->
-    Unpack ((openC k names cTm), usage) (openV (succ k) names vTm, ty)
+  Unpack cTm (vTm, ty) ->
+    Unpack (openC k names cTm) (openV (succ k) names vTm, ty)
   Annot vTm ty -> Annot (openV k names vTm) ty
 
 openV :: Depth -> V.Vector T.Text -> Value -> Value
@@ -518,7 +561,7 @@ openV k x tm = case tm of
   Lam vTm -> Lam (openV (succ k) x vTm)
   Tuple modality vTms -> Tuple modality (V.map (openV k x) vTms)
   Plus i vTm -> Plus i (openV k x vTm)
-  Let cTm vTm -> Let (openC k x cTm) (openV (succ k) x vTm)
+  Let usageAnnot cTm vTm -> Let usageAnnot (openC k x cTm) (openV (succ k) x vTm)
   Index _ -> tm
   Primitive _ -> tm
   Primop _ -> tm
