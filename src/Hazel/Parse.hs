@@ -35,8 +35,11 @@ expParser :: ST state
   (Text -> ST state (E.Result state ParseError Text Computation))
 expParser = E.parser grammar
 
+sepBy1 :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+
 sepBy :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
-sepBy = undefined
+sepBy p sep = sepBy1 p sep <|> pure []
 
 grammar :: E.Grammar r (E.Prod r ParseError Char Computation)
 grammar = mdo
