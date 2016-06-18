@@ -35,6 +35,9 @@ expParser :: ST state
   (Text -> ST state (E.Result state ParseError Text Computation))
 expParser = E.parser grammar
 
+sepBy :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
+sepBy = undefined
+
 grammar :: E.Grammar r (E.Prod r ParseError Char Computation)
 grammar = mdo
   whitespace <- E.rule $
@@ -57,26 +60,60 @@ grammar = mdo
     -- <|> Annot <$> value <* (":" :: E.Prod r ParseError Text Text) <*> preType
     <|> Annot <$> value <* E.token ':' <*> preType
 
-    -- case x goes to ty of
+    -- case x -> ty of
     --   rhs0
     --   rhs1
     <|> (do
-      E.list "case"
+      _ <- E.list "case"
       c <- computation
-      E.list "goes to"
+      _ <- E.list "->"
       ty <- preType
-      E.list "of"
+      _ <- E.list "of"
       vs <- vec value
       return (Case c ty vs)
     )
-    <|> Choose <$> computation <*> nat
-    <|> Unpack <$> computation <*> ((,) <$> value <*> preType)
+
+    -- c.i
+    <|> Choose <$> computation <* E.token '.' <*> nat
+
+    -- unpack x, y, z from c in v : ty
+    <|> (do
+      _ <- E.list "unpack"
+      params <- ident `sepBy` E.token ','
+      _ <- E.list "from"
+      c <- computation
+      v <- value
+      t <- preType
+
+      -- XXX need to use params to bind
+      return (Unpack c (v, t))
+    )
     <?> "computation"
 
   value <- E.rule $
-        Lam <$> value
+    -- \x -> v
+        (do
+      _ <- E.token '\\'
+      name <- ident
+      _ <- E.list "->"
+      v <- value
+
+      -- XXX use name to bind
+      return (Lam v)
+    )
+    <|> Primop <$> (
+          Add <$ E.list "+"
+      <|> PrintNat <$ E.list "print"
+      <|> ConcatString <$ E.list "++"
+      <|> ToUpper <$ E.list "toUpper"
+      <|> ToLower <$ E.list "toLower"
+    )
+    -- TODO Let
     <|> Index <$> nat
+    -- TODO Primitive
     <|> Neu <$> computation
+    -- TODO Tuple
+    -- TODO Plus
     <?> "value"
 
   preType <- E.rule $
