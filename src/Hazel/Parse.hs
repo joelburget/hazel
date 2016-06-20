@@ -55,7 +55,12 @@ grammar = mdo
       -- going char-by-char
       nat = read <$> some (E.satisfy Char.isDigit) <?> "nat"
 
+      -- intentionally dumb -- doesn't yet handle escaped quotes
+      str = E.token '"' *> many (E.satisfy (/= '"')) <* E.token '"'
+
       vec p = V.fromList <$> many p
+
+      index = E.token '.' *> nat
 
   computation <- E.rule $
         Var <$> ident
@@ -76,8 +81,14 @@ grammar = mdo
       return (Case c ty vs)
     )
 
-    -- c.i
-    <|> Choose <$> computation <* E.token '.' <*> nat
+    -- choose c.i
+    <|> (do
+      _ <- E.list "choose"
+      c <- computation
+      i <- index
+      return (Choose c i)
+      -- Choose <$> computation <*> index
+    )
 
     -- unpack x, y, z from c in v : ty
     <|> (do
@@ -111,10 +122,14 @@ grammar = mdo
     )
     -- TODO Let
     <|> Index <$> nat
-    -- TODO Primitive
+    <|> Primitive <$> (String <$> str <|> Nat <$> nat)
     <|> Neu <$> computation
     -- TODO Tuple
-    -- TODO Plus
+    <|> (do
+      i <- index
+      v <- value
+      return (Plus i v)
+    )
     <?> "value"
 
   preType <- E.rule $
