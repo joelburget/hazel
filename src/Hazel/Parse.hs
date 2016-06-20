@@ -88,8 +88,7 @@ grammar = mdo
       v <- value
       t <- preType
 
-      -- XXX need to use params to bind
-      return (Unpack c (v, t))
+      return (Unpack (V.fromList params) c (v, t))
     )
     <?> "computation"
 
@@ -101,8 +100,7 @@ grammar = mdo
       _ <- E.list "->"
       v <- value
 
-      -- XXX use name to bind
-      return (Lam v)
+      return (Lam name v)
     )
     <|> Primop <$> (
           Add <$ E.list "+"
@@ -122,5 +120,10 @@ grammar = mdo
   preType <- E.rule $
     undefined
     <?> "pre-type"
+
+  usageDecl <- E.rule $
+        Irrelevant <$ "0"
+    <|> Linear <$ "1"
+    <|> pure Inexhaustible
 
   return computation

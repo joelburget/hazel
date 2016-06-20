@@ -15,7 +15,7 @@ data Computation
       Computation -- expression
       Int         -- index of field to access
 
-  | Unpack Computation (Value, PreType)
+  | Unpack (Vector Text) Computation (Value, PreType)
 
 data PrimTy
   = StringTy
@@ -32,7 +32,7 @@ data PreType
 
 -- checked terms / introductions / values
 data Value
-  = Lam Value
+  = Lam Text Value
   | Primop Primop
   | Let UsageDeclaration Computation Value
   | Index Int
@@ -45,6 +45,7 @@ data Primitive
   = String String
   | Nat Int
 
+-- TODO(joel) these are going away eventually
 data UsageDeclaration
   = Irrelevant
   | Linear
