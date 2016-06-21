@@ -6,17 +6,15 @@ module Hazel.Parse where
 
 import Control.Applicative (many, some, (<|>))
 import Control.Monad.ST
-import qualified Data.Char as Char
-import Data.Functor (void)
 -- import Data.ListLike (cons)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Text.Megaparsec
 import Text.Megaparsec.Text
-import qualified Text.Megaparsec.Lexer as L
 
 import Hazel.Surface
+import Hazel.Lex
 import Hazel.Var
 
 type Position = (Int, Int)
@@ -28,43 +26,12 @@ type ParseError = String
 --   , message :: Text
 --   }
 
-lineComment :: Parser ()
-lineComment = L.skipLineComment "--"
-
-blockComment :: Parser ()
-blockComment = L.skipBlockComment "{-" "-}"
-
-scn :: Parser ()
-scn = L.space (void spaceChar) lineComment blockComment
-
--- space consumer
-sc :: Parser ()
-sc = L.space (void $ char ' ') lineComment blockComment
-
-stringLiteral :: Parser String
-stringLiteral = char '"' >> manyTill L.charLiteral (char '"')
-
-lexeme :: Parser a -> Parser a
-lexeme = L.lexeme sc
-
-ident :: Parser Text
-ident = T.pack <$> (
-      (:) <$> satisfy Char.isAlpha
-          <*> many (satisfy Char.isAlphaNum)
-          <?> "identifier"
-      )
-
 vec :: Parser a -> Parser (V.Vector a)
 vec p = V.fromList <$> many p
 
-index :: Parser Int
-index = do
-  _ <- char '.'
-  fromIntegral <$> L.integer
-
 computation :: Parser Computation
 computation =
-      Var <$> ident
+      Var <$> identifier
   <|> App <$> computation <*> value
   <|> Annot <$> value <* char ':' <*> preType
 
@@ -72,29 +39,29 @@ computation =
   --   rhs0
   --   rhs1
   <|> (do
-    _ <- string "case"
+    _ <- rword "case"
     c <- computation
-    _ <- string "->"
+    _ <- rword "->"
     ty <- preType
-    _ <- string "of"
+    _ <- rword "of"
     vs <- vec value
     return (Case c ty vs)
   )
 
   -- choose c.i
   <|> (do
-    _ <- string "choose"
+    _ <- rword "choose"
     c <- computation
     i <- index
     return (Choose c i)
     -- Choose <$> computation <*> index
   )
 
-  -- unpack x, y, z from c in v : ty
+  -- unpack (x, y, z) from c in v : ty
   <|> (do
-    _ <- string "unpack"
-    params <- ident `sepBy` char ','
-    _ <- string "from"
+    _ <- rword "unpack"
+    params <- parens $ identifier `sepBy` char ','
+    _ <- rword "from"
     c <- computation
     v <- value
     t <- preType
@@ -108,24 +75,24 @@ value =
   -- \x -> v
       (do
     _ <- char '\\'
-    name <- ident
-    _ <- string "->"
+    name <- identifier
+    _ <- rword "->"
     v <- value
 
     return (Lam name v)
   )
   <|> Primop <$> (
-        Add <$ string "+"
-    <|> PrintNat <$ string "print"
-    <|> ConcatString <$ string "++"
-    <|> ToUpper <$ string "toUpper"
-    <|> ToLower <$ string "toLower"
+        Add <$ rword "+"
+    <|> PrintNat <$ rword "print"
+    <|> ConcatString <$ rword "++"
+    <|> ToUpper <$ rword "toUpper"
+    <|> ToLower <$ rword "toLower"
   )
   -- TODO Let
   <|> Index <$> index
   <|> Primitive <$> (
         String <$> stringLiteral
-    <|> Nat . fromIntegral <$> L.integer
+    <|> Nat . fromIntegral <$> integer
   )
   <|> Neu <$> computation
   -- TODO Tuple
