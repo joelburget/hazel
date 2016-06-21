@@ -16,9 +16,11 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Hazel.Core
+                       Hazel.Eval
                        Hazel.Lex
                        Hazel.Parse
                        Hazel.Surface
+                       Hazel.SurfaceToCore
                        Hazel.Var
   build-depends:       base >= 4.7 && < 5
                      , lens
