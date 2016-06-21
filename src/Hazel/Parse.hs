@@ -7,12 +7,14 @@ module Hazel.Parse where
 import Control.Applicative (many, some, (<|>))
 import Control.Monad.ST
 import qualified Data.Char as Char
+import Data.Functor (void)
 -- import Data.ListLike (cons)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
-import qualified Text.Earley as E
-import Text.Earley ((<?>))
+import Text.Megaparsec
+import Text.Megaparsec.Text
+import qualified Text.Megaparsec.Lexer as L
 
 import Hazel.Surface
 import Hazel.Var
@@ -26,119 +28,121 @@ type ParseError = String
 --   , message :: Text
 --   }
 
--- | Get all full successful parses and a status report.
-parses :: Text -> ([Computation], E.Report ParseError Text)
-parses = E.fullParses expParser
+lineComment :: Parser ()
+lineComment = L.skipLineComment "--"
 
--- | The top-level 'Computation' parser.
-expParser :: ST state
-  (Text -> ST state (E.Result state ParseError Text Computation))
-expParser = E.parser grammar
+blockComment :: Parser ()
+blockComment = L.skipBlockComment "{-" "-}"
 
-sepBy1 :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
-sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+scn :: Parser ()
+scn = L.space (void spaceChar) lineComment blockComment
 
-sepBy :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
-sepBy p sep = sepBy1 p sep <|> pure []
+-- space consumer
+sc :: Parser ()
+sc = L.space (void $ char ' ') lineComment blockComment
 
-grammar :: E.Grammar r (E.Prod r ParseError Char Computation)
-grammar = mdo
-  whitespace <- E.rule $
-    many $ E.satisfy Char.isSpace
+stringLiteral :: Parser String
+stringLiteral = char '"' >> manyTill L.charLiteral (char '"')
 
-  let ident = T.pack <$> (
-        (:) <$> E.satisfy Char.isAlpha
-            <*> many (E.satisfy Char.isAlphaNum)
-            <?> "identifier"
-        )
-      -- TODO(joel) - we probably want a tokenizer with text tokens instead of
-      -- going char-by-char
-      nat = read <$> some (E.satisfy Char.isDigit) <?> "nat"
+lexeme :: Parser a -> Parser a
+lexeme = L.lexeme sc
 
-      -- intentionally dumb -- doesn't yet handle escaped quotes
-      str = E.token '"' *> many (E.satisfy (/= '"')) <* E.token '"'
+ident :: Parser Text
+ident = T.pack <$> (
+      (:) <$> satisfy Char.isAlpha
+          <*> many (satisfy Char.isAlphaNum)
+          <?> "identifier"
+      )
 
-      vec p = V.fromList <$> many p
+vec :: Parser a -> Parser (V.Vector a)
+vec p = V.fromList <$> many p
 
-      index = E.token '.' *> nat
+index :: Parser Int
+index = do
+  _ <- char '.'
+  fromIntegral <$> L.integer
 
-  computation <- E.rule $
-        Var <$> ident
-    <|> App <$> computation <*> value
-    -- <|> Annot <$> value <* (":" :: E.Prod r ParseError Text Text) <*> preType
-    <|> Annot <$> value <* E.token ':' <*> preType
+computation :: Parser Computation
+computation =
+      Var <$> ident
+  <|> App <$> computation <*> value
+  <|> Annot <$> value <* char ':' <*> preType
 
-    -- case x -> ty of
-    --   rhs0
-    --   rhs1
-    <|> (do
-      _ <- E.list "case"
-      c <- computation
-      _ <- E.list "->"
-      ty <- preType
-      _ <- E.list "of"
-      vs <- vec value
-      return (Case c ty vs)
-    )
+  -- case x -> ty of
+  --   rhs0
+  --   rhs1
+  <|> (do
+    _ <- string "case"
+    c <- computation
+    _ <- string "->"
+    ty <- preType
+    _ <- string "of"
+    vs <- vec value
+    return (Case c ty vs)
+  )
 
-    -- choose c.i
-    <|> (do
-      _ <- E.list "choose"
-      c <- computation
-      i <- index
-      return (Choose c i)
-      -- Choose <$> computation <*> index
-    )
+  -- choose c.i
+  <|> (do
+    _ <- string "choose"
+    c <- computation
+    i <- index
+    return (Choose c i)
+    -- Choose <$> computation <*> index
+  )
 
-    -- unpack x, y, z from c in v : ty
-    <|> (do
-      _ <- E.list "unpack"
-      params <- ident `sepBy` E.token ','
-      _ <- E.list "from"
-      c <- computation
-      v <- value
-      t <- preType
+  -- unpack x, y, z from c in v : ty
+  <|> (do
+    _ <- string "unpack"
+    params <- ident `sepBy` char ','
+    _ <- string "from"
+    c <- computation
+    v <- value
+    t <- preType
 
-      return (Unpack (V.fromList params) c (v, t))
-    )
-    <?> "computation"
+    return (Unpack (V.fromList params) c (v, t))
+  )
+  <?> "computation"
 
-  value <- E.rule $
-    -- \x -> v
-        (do
-      _ <- E.token '\\'
-      name <- ident
-      _ <- E.list "->"
-      v <- value
+value :: Parser Value
+value =
+  -- \x -> v
+      (do
+    _ <- char '\\'
+    name <- ident
+    _ <- string "->"
+    v <- value
 
-      return (Lam name v)
-    )
-    <|> Primop <$> (
-          Add <$ E.list "+"
-      <|> PrintNat <$ E.list "print"
-      <|> ConcatString <$ E.list "++"
-      <|> ToUpper <$ E.list "toUpper"
-      <|> ToLower <$ E.list "toLower"
-    )
-    -- TODO Let
-    <|> Index <$> nat
-    <|> Primitive <$> (String <$> str <|> Nat <$> nat)
-    <|> Neu <$> computation
-    -- TODO Tuple
-    <|> (do
-      i <- index
-      v <- value
-      return (Plus i v)
-    )
-    <?> "value"
+    return (Lam name v)
+  )
+  <|> Primop <$> (
+        Add <$ string "+"
+    <|> PrintNat <$ string "print"
+    <|> ConcatString <$ string "++"
+    <|> ToUpper <$ string "toUpper"
+    <|> ToLower <$ string "toLower"
+  )
+  -- TODO Let
+  <|> Index <$> index
+  <|> Primitive <$> (
+        String <$> stringLiteral
+    <|> Nat . fromIntegral <$> L.integer
+  )
+  <|> Neu <$> computation
+  -- TODO Tuple
+  <|> (do
+    i <- index
+    v <- value
+    return (Plus i v)
+  )
+  <?> "value"
 
-  preType <- E.rule $
-    undefined
-    <?> "pre-type"
+preType :: Parser PreType
+preType =
+  undefined
+  <?> "pre-type"
 
-  usageDecl <- E.rule $
-        Irrelevant <$ "0"
-    <|> Linear <$ "1"
-    <|> pure Inexhaustible
-
-  return computation
+usageDecl :: Parser UsageDeclaration
+usageDecl =
+      Irrelevant <$ char '0'
+  <|> Linear <$ char '1'
+  <|> pure Inexhaustible
