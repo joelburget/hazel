@@ -71,7 +71,7 @@ computation =
   <?> "computation"
 
 value :: Parser Value
-value =
+value = -- pLambda <|> pPrimop <|> pLet <|> pIndex <|> pPrimitive
   -- \x -> v
       (do
     _ <- char '\\'

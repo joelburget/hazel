@@ -16,19 +16,7 @@ data Computation
       Int         -- index of field to access
 
   | Unpack (Vector Text) Computation (Value, PreType)
-
-data PrimTy
-  = StringTy
-  | NatTy
-
-data PreType
-  = PrimTy PrimTy
-  | IndexTy Int
-  | LollyTy (PreType, UsageDeclaration) PreType
-  | TupleTy (Vector PreType)
-  | TimesTy (Vector PreType)
-  | WithTy (Vector PreType)
-  | PlusTy (Vector PreType)
+  deriving (Show, Eq)
 
 -- checked terms / introductions / values
 data Value
@@ -40,16 +28,34 @@ data Value
   | Neu Computation
   | Tuple (Vector Value)
   | Plus Int Value
+  deriving (Show, Eq)
+
+data PrimTy
+  = StringTy
+  | NatTy
+  deriving (Show, Eq)
+
+data PreType
+  = PrimTy PrimTy
+  | IndexTy Int
+  | LollyTy (PreType, UsageDeclaration) PreType
+  | TupleTy (Vector PreType)
+  | TimesTy (Vector PreType)
+  | WithTy (Vector PreType)
+  | PlusTy (Vector PreType)
+  deriving (Show, Eq)
 
 data Primitive
   = String String
   | Nat Int
+  deriving (Show, Eq)
 
 -- TODO(joel) these are going away eventually
 data UsageDeclaration
   = Irrelevant
   | Linear
   | Inexhaustible
+  deriving (Show, Eq)
 
 data Primop
   = Add
@@ -57,3 +63,4 @@ data Primop
   | ConcatString
   | ToUpper
   | ToLower
+  deriving (Show, Eq)

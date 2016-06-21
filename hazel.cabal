@@ -18,6 +18,7 @@ library
   exposed-modules:     Hazel.Core
                        Hazel.Lex
                        Hazel.Parse
+                       Hazel.Surface
                        Hazel.Var
   build-depends:       base >= 4.7 && < 5
                      , lens
@@ -43,6 +44,7 @@ test-suite hazel-test
   build-depends:       base
                      , hspec
                      , vector
+                     , megaparsec
                      , hazel
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
