@@ -29,6 +29,25 @@ module Hazel where
 -- * threading contexts specifies calling convention in a very real way
 -- * what data structures are we using (list vs vector / ralist)
 
+
+
+-- TODO(bts):
+-- - go over PR for 2d debruijn changes
+-- - GADT ast
+-- - if possible yet: merge with joel's pre/type changes
+-- - parameterize AST over annotation type
+-- - impl type annotation. potentially a wrapper (at the lowest lvl around ())
+-- - impl function to decorate an AST with breadcrumbs
+-- - impl HasBreadcrumb, HasType typeclasses
+-- - add standard Tuple Project
+-- - unify Cxt and eval's env, and implement Ixed typeclass wrt Variable
+--     newtype Context a = Context [V.Vector a]
+--     Ctx becomes: Context (Type, Usage)
+--     eval's env becomes: Context Value
+--     - add: type instance Index (Context a) = Variable
+--     - add: type instance IxValue (Context a) = a
+--     - implement: instance Ixed (Context a), replacing atVar Traversal
+
 import Hazel.Var
 
 import Control.Lens hiding (Const)
@@ -40,7 +59,6 @@ import Data.Vector (Vector)
 
 import qualified Data.Vector as V
 import qualified Data.Text as T
-
 
 -- inferred terms / eliminations / neutral terms
 data Computation
