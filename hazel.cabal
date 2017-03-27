@@ -2,7 +2,7 @@ name:                hazel
 version:             0.1.0.0
 synopsis:            Initial project template from stack
 description:         Please see README.md
-homepage:            https://github.com/hopper-lang/hopper/tree/hazel#readme
+homepage:            https://github.com/joelburget/hazel
 license:             BSD3
 license-file:        LICENSE
 author:              Joel Burget
@@ -48,4 +48,4 @@ test-suite hazel-test
 
 source-repository head
   type:     git
-  location: https://github.com/hopper-lang/hopper/tree/hazel
+  location: https://github.com/joelburget/hazel
