@@ -31,8 +31,7 @@ parses :: Text -> ([Computation], E.Report ParseError Text)
 parses = E.fullParses expParser
 
 -- | The top-level 'Computation' parser.
-expParser :: ST state
-  (Text -> ST state (E.Result state ParseError Text Computation))
+expParser :: E.Parser ParseError Text Computation
 expParser = E.parser grammar
 
 sepBy1 :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
