@@ -23,7 +23,10 @@ library
                      , mtl
                      , text >= 1.2.2.1 && < 1.3
                      , vector
+                     , parsers
                      , Earley >= 0.12
+                     , unordered-containers == 0.2.*
+                     , attoparsec == 0.13.*
   default-language:    Haskell2010
 
 executable hazel-exe

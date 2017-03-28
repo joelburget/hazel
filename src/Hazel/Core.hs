@@ -146,7 +146,10 @@ data Primitive
   | Nat Int
   deriving (Eq, Show)
 
+pattern NatV :: Int -> Value
 pattern NatV i = Primitive (Nat i)
+
+pattern StrV :: String -> Value
 pattern StrV s = Primitive (String s)
 
 -- We should think about a more extensible way to add primops to the language

@@ -4,18 +4,14 @@
 
 module Hazel.Parse where
 
-import Control.Applicative (many, some, (<|>))
-import Control.Monad.ST
-import qualified Data.Char as Char
+import Control.Applicative (many, (<|>))
 -- import Data.ListLike (cons)
-import Data.Text (Text)
-import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Text.Earley as E
 import Text.Earley ((<?>))
 
 import Hazel.Surface
-import Hazel.Var
+import Hazel.Tokenize
 
 type Position = (Int, Int)
 
@@ -26,63 +22,45 @@ type ParseError = String
 --   , message :: Text
 --   }
 
--- | Get all full successful parses and a status report.
-parses :: Text -> ([Computation], E.Report ParseError Text)
-parses = E.fullParses expParser
-
 -- | The top-level 'Computation' parser.
-expParser :: E.Parser ParseError Text Computation
+expParser :: E.Parser ParseError [Token] Computation
 expParser = E.parser grammar
 
-sepBy1 :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
-sepBy1 p sep = (:) <$> p <*> many (sep *> p)
-
-sepBy :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
-sepBy p sep = sepBy1 p sep <|> pure []
-
-grammar :: E.Grammar r (E.Prod r ParseError Char Computation)
+grammar :: E.Grammar r (E.Prod r ParseError Token Computation)
 grammar = mdo
-  whitespace <- E.rule $
-    many $ E.satisfy Char.isSpace
-
-  let ident = T.pack <$> (
-        (:) <$> E.satisfy Char.isAlpha
-            <*> many (E.satisfy Char.isAlphaNum)
-            <?> "identifier"
-        )
-      -- TODO(joel) - we probably want a tokenizer with text tokens instead of
-      -- going char-by-char
-      nat = read <$> some (E.satisfy Char.isDigit) <?> "nat"
-
-      -- intentionally dumb -- doesn't yet handle escaped quotes
-      str = E.token '"' *> many (E.satisfy (/= '"')) <* E.token '"'
-
+  let plus = E.namedToken "+"
+      minus = E.namedToken "-"
+      arr = E.namedToken "->"
       vec p = V.fromList <$> many p
 
-      index = E.token '.' *> nat
+      index = E.token "." *> nat
+
+  ident <- undefined
+  nat <- undefined
+  str <- undefined
 
   computation <- E.rule $
         Var <$> ident
     <|> App <$> computation <*> value
     -- <|> Annot <$> value <* (":" :: E.Prod r ParseError Text Text) <*> preType
-    <|> Annot <$> value <* E.token ':' <*> preType
+    <|> Annot <$> value <* E.token ":" <*> preType
 
     -- case x -> ty of
     --   rhs0
     --   rhs1
     <|> (do
-      _ <- E.list "case"
+      _ <- E.token "case"
       c <- computation
-      _ <- E.list "->"
+      _ <- E.token "->"
       ty <- preType
-      _ <- E.list "of"
+      _ <- E.token "of"
       vs <- vec value
       return (Case c ty vs)
     )
 
     -- choose c.i
     <|> (do
-      _ <- E.list "choose"
+      _ <- E.token "choose"
       c <- computation
       i <- index
       return (Choose c i)
@@ -91,9 +69,9 @@ grammar = mdo
 
     -- unpack x, y, z from c in v : ty
     <|> (do
-      _ <- E.list "unpack"
-      params <- ident `sepBy` E.token ','
-      _ <- E.list "from"
+      _ <- E.token "unpack"
+      params <- ident `sepBy` E.token ","
+      _ <- E.token "from"
       c <- computation
       v <- value
       t <- preType
@@ -105,39 +83,52 @@ grammar = mdo
   value <- E.rule $
     -- \x -> v
         (do
-      _ <- E.token '\\'
+      _ <- E.token "\\"
       name <- ident
-      _ <- E.list "->"
+      _ <- E.token "->"
       v <- value
 
       return (Lam name v)
     )
     <|> Primop <$> (
-          Add <$ E.list "+"
-      <|> PrintNat <$ E.list "print"
-      <|> ConcatString <$ E.list "++"
-      <|> ToUpper <$ E.list "toUpper"
-      <|> ToLower <$ E.list "toLower"
+          Add <$ E.token "+"
+      <|> PrintNat <$ E.token "print"
+      <|> ConcatString <$ E.token "++"
+      <|> ToUpper <$ E.token "toUpper"
+      <|> ToLower <$ E.token "toLower"
     )
     -- TODO Let
     <|> Index <$> nat
     <|> Primitive <$> (String <$> str <|> Nat <$> nat)
     <|> Neu <$> computation
     -- TODO Tuple
-    <|> (do
-      i <- index
-      v <- value
-      return (Plus i v)
-    )
+    <|> Plus <$> (index <* E.token ":") <*> value
     <?> "value"
 
   preType <- E.rule $
-    undefined
+    PrimTy <$> (
+          StringTy <$ E.token "string"
+      <|> NatTy <$ E.token "nat"
+    )
+    <|> IndexTy <$> nat
+    <|> LollyTy <$> ((,) <$> preType <*> usageDecl)
+                <*> preType
+    -- <|> TupleTy
     <?> "pre-type"
 
   usageDecl <- E.rule $
-        Irrelevant <$ "0"
-    <|> Linear <$ "1"
+       Irrelevant <$ E.token "0"
+    <|> Linear <$ E.token "1"
     <|> pure Inexhaustible
 
   return computation
+
+sepBy1 :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+
+sepBy :: E.Prod r e t a -> E.Prod r e t sep -> E.Prod r e t [a]
+sepBy p sep = sepBy1 p sep <|> pure []
+
+-- | Get all full successful parses and a status report.
+parses :: [Token] -> ([Computation], E.Report ParseError [Token])
+parses = E.fullParses expParser
